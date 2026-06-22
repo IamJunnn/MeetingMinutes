@@ -33,22 +33,39 @@ meeting's audio are recorded as **separate tracks**, so transcripts can tell
 - Xcode 16 or later (developed against Xcode 26)
 - Apple Silicon recommended
 
-## Build & run
+## Quick start (one command)
+
+No Apple developer account required:
 
 ```sh
-# 1. Set your signing team (so macOS keeps permission grants across rebuilds)
-cp Local.xcconfig.example Local.xcconfig
-#    then edit Local.xcconfig and set DEVELOPMENT_TEAM to your Apple team ID
+git clone https://github.com/IamJunnn/MeetingMinute.git
+cd MeetingMinute
+./scripts/install.sh
+```
 
-# 2. Open and run
+This builds the app (ad-hoc signed if you have no team set) and installs it to
+`/Applications`. Launch it from Spotlight (⌘-Space → "Meeting Minutes"). The
+first build compiles whisper.cpp from source, so it takes a few minutes.
+
+## Build & run in Xcode
+
+For development:
+
+```sh
+# Optional but recommended: set your signing team so macOS keeps permission
+# grants across rebuilds (otherwise it re-prompts each build).
+cp Local.xcconfig.example Local.xcconfig
+#   then edit Local.xcconfig and set DEVELOPMENT_TEAM to your Apple team ID
+
 open MeetingMinutes.xcodeproj
 ```
 
-Then select the **MeetingMinutes** scheme and press **Run** (⌘R).
+Select the **MeetingMinutes** scheme and press **Run** (⌘R).
 
-`Local.xcconfig` is git-ignored, so your team ID never ends up in the repo. You
-can leave it blank to build, but Xcode will ask you to pick a team on first Run,
-and macOS may re-prompt for permissions on every rebuild.
+`Local.xcconfig` is git-ignored, so your team ID never lands in the repo. If you
+leave it unset and Xcode complains about signing, open **Signing &
+Capabilities** and either pick your team or set the signing certificate to
+**"Sign to Run Locally"** — both build a runnable local app.
 
 On first launch the app shows an onboarding screen and asks for two permissions:
 
