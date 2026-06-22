@@ -1,0 +1,16 @@
+// Signing configuration for MeetingMinutes.
+//
+// Code signing is needed so macOS recognizes the app across rebuilds and keeps
+// your Microphone / Screen Recording permission grants (otherwise it re-prompts
+// every build). To build locally:
+//
+//   1. cp Local.xcconfig.example Local.xcconfig
+//   2. Put your Apple Development Team ID in Local.xcconfig
+//
+// Local.xcconfig is git-ignored, so your team ID never lands in the repo.
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+
+// Local overrides (DEVELOPMENT_TEAM) — included last so they win.
+#include? "Local.xcconfig"
