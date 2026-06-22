@@ -108,13 +108,18 @@ struct MeetingDetailView: View {
         HStack {
             Text("Minutes").font(.headline)
             Spacer()
-            if case .completed = minutes.phase, !minutesMarkdown.isEmpty {
+            if !minutesMarkdown.isEmpty {
                 Button {
                     let pasteboard = NSPasteboard.general
                     pasteboard.clearContents()
-                    pasteboard.setString(minutesMarkdown, forType: .string)
+                    pasteboard.setString(exportText, forType: .string)
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.link)
+
+                ShareLink(item: exportText, subject: Text("Meeting Minutes — \(meeting.title)")) {
+                    Label("Share", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.link)
             }
@@ -154,6 +159,12 @@ struct MeetingDetailView: View {
     }
 
     // MARK: - Helpers
+
+    /// Clean, email-ready text: the meeting date followed by the minutes with
+    /// Markdown symbols stripped.
+    private var exportText: String {
+        meeting.title + "\n\n" + MinutesExport.plainText(minutesMarkdown)
+    }
 
     private func load() async {
         lines = meeting.loadTranscript()
