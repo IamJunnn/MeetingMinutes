@@ -17,28 +17,30 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
-        }
-        .navigationTitle("Meeting Minutes")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    store.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh meetings")
+        NavigationStack {
+            HSplitView {
+                sidebar
+                    .frame(minWidth: 240, idealWidth: 280, maxWidth: 380, maxHeight: .infinity)
+                detail
+                    .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
             }
-            ToolbarItem {
-                Button {
-                    showSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
+            .toolbar {
+                ToolbarItem {
+                    Button {
+                        store.refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Refresh meetings")
                 }
-                .help("Settings")
+                ToolbarItem {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("Settings")
+                }
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -107,7 +109,7 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
         }
-        .frame(minWidth: 240)
+        .frame(maxHeight: .infinity)
     }
 
     @ViewBuilder
