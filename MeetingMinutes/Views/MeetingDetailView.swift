@@ -13,6 +13,7 @@ struct MeetingDetailView: View {
 
     @State private var lines: [TranscriptLine] = []
     @State private var minutesMarkdown: String = ""
+    @State private var copied = false
 
     var body: some View {
         ScrollView {
@@ -113,8 +114,15 @@ struct MeetingDetailView: View {
                     let pasteboard = NSPasteboard.general
                     pasteboard.clearContents()
                     pasteboard.setString(exportText, forType: .string)
+                    copied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        copied = false
+                    }
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    Label(copied ? "Copied!" : "Copy",
+                          systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(copied ? Color.green : Color.accentColor)
                 }
                 .buttonStyle(.link)
 
