@@ -10,6 +10,8 @@ struct RecorderView: View {
 
     var body: some View {
         VStack(spacing: 24) {
+            Spacer(minLength: 0)
+
             VStack(spacing: 4) {
                 Text("New Recording")
                     .font(.largeTitle.bold())
@@ -34,6 +36,8 @@ struct RecorderView: View {
             .frame(maxWidth: 360)
 
             statusFooter
+
+            Spacer(minLength: 0)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

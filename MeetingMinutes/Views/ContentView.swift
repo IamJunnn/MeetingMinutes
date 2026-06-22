@@ -104,6 +104,7 @@ struct ContentView: View {
                 store.refresh()
                 selection = .meeting(folder.lastPathComponent)
             }
+            .id("record")
         }
     }
 }
