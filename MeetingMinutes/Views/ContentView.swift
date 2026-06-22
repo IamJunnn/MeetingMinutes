@@ -26,6 +26,14 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    store.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh meetings")
+            }
+            ToolbarItem {
+                Button {
                     showSettings = true
                 } label: {
                     Image(systemName: "gearshape")
@@ -44,6 +52,7 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
+            store.refresh()
         }
         .frame(minWidth: 820, minHeight: 560)
     }
