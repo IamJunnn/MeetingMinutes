@@ -13,9 +13,6 @@ struct MeetingDetailView: View {
 
     @State private var lines: [TranscriptLine] = []
     @State private var minutesMarkdown: String = ""
-    @State private var track: Track = .participants
-
-    private enum Track: String, CaseIterable { case me = "You", participants = "Participants" }
 
     var body: some View {
         ScrollView {
@@ -31,22 +28,14 @@ struct MeetingDetailView: View {
             .frame(maxWidth: 700, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear(perform: load)
+        .task(id: meeting.id) { await load() }
     }
 
     // MARK: - Header
 
     private var headerRow: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(meeting.title).font(.title2.bold())
-                HStack(spacing: 10) {
-                    if meeting.hasMic { Label("Mic", systemImage: "mic") }
-                    if meeting.hasSystem { Label("System audio", systemImage: "speaker.wave.2") }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
+        HStack(alignment: .firstTextBaseline) {
+            Text(meeting.title).font(.title2.bold())
             Spacer()
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
@@ -57,37 +46,24 @@ struct MeetingDetailView: View {
 
     // MARK: - Audio
 
-    @ViewBuilder
     private var audioSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if meeting.hasMic && meeting.hasSystem {
-                Picker("Track", selection: $track) {
-                    ForEach(Track.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 240)
-                .onChange(of: track) { _, _ in loadAudio() }
+        HStack(spacing: 12) {
+            Button(action: player.togglePlay) {
+                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 32))
             }
+            .buttonStyle(.borderless)
+            .disabled(player.loadedURL == nil)
 
-            HStack(spacing: 12) {
-                Button(action: player.togglePlay) {
-                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 32))
-                }
-                .buttonStyle(.borderless)
-                .disabled(player.loadedURL == nil)
+            Slider(
+                value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }),
+                in: 0...max(player.duration, 0.1)
+            )
+            .disabled(player.loadedURL == nil)
 
-                Slider(
-                    value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }),
-                    in: 0...max(player.duration, 0.1)
-                )
-                .disabled(player.loadedURL == nil)
-
-                Text("\(Self.time(player.currentTime)) / \(Self.time(player.duration))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+            Text("\(Self.time(player.currentTime)) / \(Self.time(player.duration))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -179,16 +155,10 @@ struct MeetingDetailView: View {
 
     // MARK: - Helpers
 
-    private func load() {
+    private func load() async {
         lines = meeting.loadTranscript()
         minutesMarkdown = meeting.loadMinutes()
-        track = meeting.hasSystem ? .participants : .me
-        loadAudio()
-    }
-
-    private func loadAudio() {
-        let url = (track == .me) ? meeting.micURL : meeting.systemURL
-        if FileManager.default.fileExists(atPath: url.path) {
+        if let url = await AudioMixer.mixedURL(for: meeting) {
             player.load(url)
         }
     }
