@@ -58,34 +58,55 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $selection) {
-            Section {
-                Label("New Recording", systemImage: "record.circle")
-                    .tag(Selection.record)
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search transcripts", text: $store.searchText)
+                    .textFieldStyle(.plain)
+                if !store.searchText.isEmpty {
+                    Button {
+                        store.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            Section("Meetings") {
-                if store.filtered.isEmpty {
-                    Text(store.searchText.isEmpty ? "No recordings yet." : "No matches.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(store.filtered) { meeting in
-                        MeetingRow(meeting: meeting)
-                            .tag(Selection.meeting(meeting.id))
-                            .contextMenu {
-                                Button("Reveal in Finder") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
+            .padding(7)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .padding([.horizontal, .top], 10)
+            .padding(.bottom, 4)
+
+            List(selection: $selection) {
+                Section {
+                    Label("New Recording", systemImage: "record.circle")
+                        .tag(Selection.record)
+                }
+                Section("Meetings") {
+                    if store.filtered.isEmpty {
+                        Text(store.searchText.isEmpty ? "No recordings yet." : "No matches.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(store.filtered) { meeting in
+                            MeetingRow(meeting: meeting)
+                                .tag(Selection.meeting(meeting.id))
+                                .contextMenu {
+                                    Button("Reveal in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
+                                    }
+                                    Button("Delete", role: .destructive) {
+                                        if selection == .meeting(meeting.id) { selection = .record }
+                                        store.delete(meeting)
+                                    }
                                 }
-                                Button("Delete", role: .destructive) {
-                                    if selection == .meeting(meeting.id) { selection = .record }
-                                    store.delete(meeting)
-                                }
-                            }
+                        }
                     }
                 }
             }
+            .listStyle(.sidebar)
         }
-        .searchable(text: $store.searchText, placement: .sidebar, prompt: "Search transcripts")
         .frame(minWidth: 240)
     }
 
