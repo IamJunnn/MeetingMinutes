@@ -35,11 +35,15 @@ struct PermissionsView: View {
             )
 
             if permissions.screenRecording != .granted {
-                Label("After enabling Screen Recording, quit and reopen the app — macOS only applies it on a fresh launch.",
-                      systemImage: "arrow.clockwise.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Already enabled it in System Settings? macOS only applies Screen Recording after a restart — relaunch to finish.",
+                          systemImage: "arrow.clockwise.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Quit & Reopen") { permissions.relaunch() }
+                        .buttonStyle(.borderedProminent)
+                }
             }
 
             Label("Recording meetings may require everyone's consent depending on where you are. Make sure you have permission.",

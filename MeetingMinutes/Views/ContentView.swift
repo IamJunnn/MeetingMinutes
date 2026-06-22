@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var selection: Selection? = .record
     @State private var showSettings = false
     @State private var showPermissions = false
+    @AppStorage("didCompleteOnboarding") private var didCompleteOnboarding = false
 
     private enum Selection: Hashable {
         case record
@@ -45,12 +46,17 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showPermissions) {
-            PermissionsView(permissions: permissions) { showPermissions = false }
+            PermissionsView(permissions: permissions) {
+                didCompleteOnboarding = true
+                showPermissions = false
+            }
         }
         .onAppear {
             store.refresh()
             permissions.refresh()
-            showPermissions = !permissions.allGranted
+            // Only nag on a fresh install: not granted, never dismissed, and no
+            // recordings yet (existing recordings prove permissions work).
+            showPermissions = !permissions.allGranted && !didCompleteOnboarding && store.meetings.isEmpty
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()

@@ -53,4 +53,15 @@ final class PermissionsManager: ObservableObject {
             NSWorkspace.shared.open(url)
         }
     }
+
+    /// Relaunches the app — required for macOS to apply a newly granted Screen
+    /// Recording permission (it's only read at launch).
+    func relaunch() {
+        let url = Bundle.main.bundleURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { NSApplication.shared.terminate(nil) }
+        }
+    }
 }
