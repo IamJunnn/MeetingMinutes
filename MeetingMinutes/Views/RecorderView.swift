@@ -13,7 +13,7 @@ struct RecorderView: View {
             VStack(spacing: 4) {
                 Text("New Recording")
                     .font(.largeTitle.bold())
-                Text("Records your mic and the meeting's audio on separate tracks.")
+                Text("Captures your mic and the meeting's audio together.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
