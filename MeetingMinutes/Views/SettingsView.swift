@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var apiKey: String = KeychainStore.load() ?? ""
-    @State private var saved = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -19,7 +18,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 SecureField("sk-ant-…", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
-                    .onChange(of: apiKey) { saved = false }
+                    .onSubmit(save)
                 Link("Get an API key at console.anthropic.com",
                      destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                     .font(.caption)
@@ -29,29 +28,30 @@ struct SettingsView: View {
                 Button("Remove") {
                     KeychainStore.delete()
                     apiKey = ""
-                    saved = false
+                    dismiss()
                 }
                 .disabled(apiKey.isEmpty)
 
-                if saved {
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-
                 Spacer()
 
-                Button("Done") { dismiss() }
-                Button("Save") {
-                    KeychainStore.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
-                    saved = true
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel") { dismiss() }
+                Button("Save", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(trimmedKey.isEmpty)
             }
         }
         .padding(24)
         .frame(width: 440)
+    }
+
+    private var trimmedKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        guard !trimmedKey.isEmpty else { return }
+        KeychainStore.save(trimmedKey)
+        dismiss()
     }
 }
 
