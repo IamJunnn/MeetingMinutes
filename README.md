@@ -44,8 +44,8 @@ meeting's audio are recorded as **separate tracks**, so transcripts can tell
 No Apple developer account required:
 
 ```sh
-git clone https://github.com/IamJunnn/MeetingMinute.git
-cd MeetingMinute
+git clone https://github.com/IamJunnn/MeetingMinutes.git
+cd MeetingMinutes
 ./scripts/install.sh
 ```
 
