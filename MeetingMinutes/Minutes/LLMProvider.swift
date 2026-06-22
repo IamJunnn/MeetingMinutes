@@ -27,7 +27,7 @@ enum LLMProvider: String, CaseIterable, Identifiable {
 
     var defaultModel: String {
         switch self {
-        case .anthropic: return "claude-opus-4-8"
+        case .anthropic: return "claude-sonnet-4-6"
         case .openai: return "gpt-4o"
         case .gemini: return "gemini-2.0-flash"
         case .ollama: return "llama3.1"

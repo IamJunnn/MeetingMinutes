@@ -29,7 +29,7 @@ meeting's audio are recorded as **separate tracks**, so transcripts can tell
 
 - [x] **Phase 1 — Capture:** two-track recording (mic + system audio) to `.m4a`
 - [x] **Phase 2 — Transcription:** local `whisper.cpp` (multilingual `small` model), per-track speaker labels, pluggable cloud
-- [x] **Phase 3 — Minutes:** Claude API (`claude-opus-4-8`) → summary, decisions, action items
+- [x] **Phase 3 — Minutes:** Claude / OpenAI / Gemini / local Ollama → summary, decisions, action items
 - [x] **Phase 4 — Library:** sidebar of past meetings, full-text transcript search, audio playback
 - [ ] **Phase 5 — Polish:** notarized release, consent flow
 
