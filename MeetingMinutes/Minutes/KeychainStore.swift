@@ -1,13 +1,12 @@
 import Foundation
 import Security
 
-/// Stores the Anthropic API key in the macOS Keychain. Never written to disk
-/// in plaintext or committed to git.
+/// Stores API keys in the macOS Keychain, one entry per provider account.
+/// Never written to disk in plaintext or committed to git.
 enum KeychainStore {
     private static let service = "build.ecoblox.MeetingMinutes"
-    private static let account = "anthropic-api-key"
 
-    static func save(_ value: String) {
+    static func save(_ value: String, account: String) {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -19,7 +18,7 @@ enum KeychainStore {
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    static func load() -> String? {
+    static func load(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -36,7 +35,7 @@ enum KeychainStore {
         return value
     }
 
-    static func delete() {
+    static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -45,8 +44,8 @@ enum KeychainStore {
         SecItemDelete(query as CFDictionary)
     }
 
-    static var hasKey: Bool {
-        guard let value = load() else { return false }
+    static func hasKey(account: String) -> Bool {
+        guard let value = load(account: account) else { return false }
         return !value.isEmpty
     }
 }
