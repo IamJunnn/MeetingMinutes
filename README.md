@@ -1,8 +1,14 @@
-# Meeting Minutes
+<p align="center">
+  <img src="docs/app-icon-source.png" width="120" alt="Meeting Minutes icon">
+</p>
 
-![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
-![Swift](https://img.shields.io/badge/Swift-5-orange)
-![License](https://img.shields.io/badge/license-MIT-green)
+<h1 align="center">Meeting Minutes</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
 
 A native macOS app that records your meetings (Zoom, Google Meet, Teams, or
 anything else), transcribes them, and generates AI meeting minutes — with
@@ -24,8 +30,8 @@ meeting's audio are recorded as **separate tracks**, so transcripts can tell
 - [x] **Phase 1 — Capture:** two-track recording (mic + system audio) to `.m4a`
 - [x] **Phase 2 — Transcription:** local `whisper.cpp` (multilingual `small` model), per-track speaker labels, pluggable cloud
 - [x] **Phase 3 — Minutes:** Claude API (`claude-opus-4-8`) → summary, decisions, action items
-- [ ] **Phase 4 — Library:** browse, search, and play past meetings
-- [ ] **Phase 5 — Polish:** packaging, onboarding, consent flow
+- [x] **Phase 4 — Library:** sidebar of past meetings, full-text transcript search, audio playback
+- [ ] **Phase 5 — Polish:** notarized release, consent flow
 
 ## Requirements
 
@@ -122,6 +128,7 @@ MeetingMinutes/
 ├── Capture/         Microphone + system-audio capture, session orchestration
 ├── Transcription/   whisper.cpp transcriber, model download, audio decode/merge
 ├── Minutes/         Claude API client, Keychain storage, minutes generation
+├── Library/         Past-meeting store (filesystem-backed), audio playback
 ├── Permissions/     Microphone + Screen Recording permission tracking
 ├── Models/          Shared data types (TranscriptLine)
 └── Views/           UI

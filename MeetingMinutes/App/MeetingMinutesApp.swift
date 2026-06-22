@@ -4,8 +4,8 @@ import SwiftUI
 struct MeetingMinutesApp: App {
     var body: some Scene {
         WindowGroup {
-            RecordingView()
+            ContentView()
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 980, height: 680)
     }
 }
