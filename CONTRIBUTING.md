@@ -20,6 +20,12 @@ Select the **MeetingMinutes** scheme and Run (⌘R). On first launch you'll be
 guided through Microphone and Screen Recording permissions. See the
 [Troubleshooting](README.md#troubleshooting) section if permissions misbehave.
 
+Or, to just build and install the app without Xcode (no Apple account needed):
+
+```sh
+./scripts/install.sh   # builds Release, installs to /Applications
+```
+
 To build from the command line (how CI builds it):
 
 ```sh
