@@ -2,7 +2,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var apiKey: String = KeychainStore.load() ?? ""
+
+    @State private var provider: LLMProvider = MinutesSettings.provider
+    @State private var apiKey: String = ""
+    @State private var model: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -10,47 +13,80 @@ struct SettingsView: View {
                 .font(.title2.bold())
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Anthropic API Key")
+                Text("Minutes Provider")
                     .font(.headline)
-                Text("Used to generate meeting minutes with Claude. Stored securely in your macOS Keychain — never written to disk in plaintext.")
+                Picker("Provider", selection: $provider) {
+                    ForEach(LLMProvider.allCases) { Text($0.displayName).tag($0) }
+                }
+                .labelsHidden()
+                .onChange(of: provider) { _, newValue in loadFields(for: newValue) }
+
+                Text(provider.helpText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                SecureField("sk-ant-…", text: $apiKey)
+            }
+
+            if provider.needsKey {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(provider.keyLabel).font(.subheadline.bold())
+                    SecureField("API key", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    if let url = provider.signupURL {
+                        Link("Get an API key", destination: url).font(.caption)
+                    }
+                }
+            } else if let url = provider.signupURL {
+                Link("Install Ollama", destination: url).font(.caption)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Model").font(.subheadline.bold())
+                TextField(provider.defaultModel, text: $model)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(save)
-                Link("Get an API key at console.anthropic.com",
-                     destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                Text("Leave blank to use the default (\(provider.defaultModel)).")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             HStack {
-                Button("Remove") {
-                    KeychainStore.delete()
-                    apiKey = ""
-                    dismiss()
+                if provider.needsKey {
+                    Button("Remove Key") {
+                        KeychainStore.delete(account: provider.keychainAccount)
+                        apiKey = ""
+                    }
+                    .disabled(apiKey.isEmpty)
                 }
-                .disabled(apiKey.isEmpty)
 
                 Spacer()
 
                 Button("Cancel") { dismiss() }
                 Button("Save", action: save)
                     .buttonStyle(.borderedProminent)
-                    .disabled(trimmedKey.isEmpty)
             }
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 460)
+        .onAppear { loadFields(for: provider) }
     }
 
-    private var trimmedKey: String {
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func loadFields(for provider: LLMProvider) {
+        apiKey = provider.needsKey ? (KeychainStore.load(account: provider.keychainAccount) ?? "") : ""
+        let stored = MinutesSettings.model(for: provider)
+        model = (stored == provider.defaultModel) ? "" : stored
     }
 
     private func save() {
-        guard !trimmedKey.isEmpty else { return }
-        KeychainStore.save(trimmedKey)
+        if provider.needsKey {
+            let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                KeychainStore.delete(account: provider.keychainAccount)
+            } else {
+                KeychainStore.save(trimmed, account: provider.keychainAccount)
+            }
+        }
+        MinutesSettings.setModel(model, for: provider)
+        MinutesSettings.provider = provider
         dismiss()
     }
 }

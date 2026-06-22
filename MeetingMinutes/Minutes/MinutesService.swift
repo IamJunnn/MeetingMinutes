@@ -17,14 +17,29 @@ final class MinutesService: ObservableObject {
     var isGenerating: Bool { phase == .generating }
 
     func generate(from lines: [TranscriptLine], folder: URL) async {
-        guard let key = KeychainStore.load(), !key.isEmpty else {
-            phase = .failed("No Anthropic API key set. Add one in Settings (the gear icon).")
-            return
+        let provider = MinutesSettings.provider
+        let model = MinutesSettings.model(for: provider)
+
+        let client: LLMClient
+        switch provider {
+        case .anthropic, .openai, .gemini:
+            guard let key = KeychainStore.load(account: provider.keychainAccount), !key.isEmpty else {
+                phase = .failed(LLMError.missingKey(provider: provider.displayName).localizedDescription)
+                return
+            }
+            switch provider {
+            case .anthropic: client = AnthropicClient(apiKey: key, model: model)
+            case .openai: client = OpenAIClient(apiKey: key, model: model)
+            case .gemini: client = GeminiClient(apiKey: key, model: model)
+            default: return
+            }
+        case .ollama:
+            client = OllamaClient(model: model)
         }
+
         phase = .generating
         markdown = ""
         do {
-            let client = ClaudeClient(apiKey: key)
             let result = try await client.generate(system: Self.systemPrompt, user: lines.plainText)
             markdown = result
             try? result.write(to: folder.appendingPathComponent("minutes.md"), atomically: true, encoding: .utf8)
