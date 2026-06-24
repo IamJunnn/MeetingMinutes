@@ -17,24 +17,12 @@ final class MinutesService: ObservableObject {
     var isGenerating: Bool { phase == .generating }
 
     func generate(from lines: [TranscriptLine], folder: URL) async {
-        let provider = MinutesSettings.provider
-        let model = MinutesSettings.model(for: provider)
-
         let client: LLMClient
-        switch provider {
-        case .anthropic, .openai, .gemini:
-            guard let key = KeychainStore.load(account: provider.keychainAccount), !key.isEmpty else {
-                phase = .failed(LLMError.missingKey(provider: provider.displayName).localizedDescription)
-                return
-            }
-            switch provider {
-            case .anthropic: client = AnthropicClient(apiKey: key, model: model)
-            case .openai: client = OpenAIClient(apiKey: key, model: model)
-            case .gemini: client = GeminiClient(apiKey: key, model: model)
-            default: return
-            }
-        case .ollama:
-            client = OllamaClient(model: model)
+        do {
+            client = try LLMClientFactory.makeActive()
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return
         }
 
         phase = .generating
@@ -50,7 +38,7 @@ final class MinutesService: ObservableObject {
     }
 
     private static let systemPrompt = """
-    You are an expert meeting-minutes assistant. You receive a meeting transcript whose lines are labeled by speaker — "You" is the person running the app, "Participant" is everyone else — each with a timestamp.
+    You are an expert meeting-minutes assistant. You receive a meeting transcript whose lines are labeled by speaker, each with a timestamp. "You" is the person running the app. Other speakers are either named (e.g. "Sarah") or, when their name is unknown, labeled "Speaker 1", "Speaker 2", … — attribute decisions and action items to whichever label/name spoke them.
 
     Produce concise, well-structured meeting minutes in Markdown with exactly these three sections:
 

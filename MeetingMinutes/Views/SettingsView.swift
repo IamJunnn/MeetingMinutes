@@ -7,10 +7,38 @@ struct SettingsView: View {
     @State private var apiKey: String = ""
     @State private var model: String = ""
 
+    @State private var txProvider: TranscriptionProvider = TranscriptionSettings.provider
+    @State private var deepgramKey: String = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Settings")
                 .font(.title2.bold())
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Transcription")
+                    .font(.headline)
+                Picker("Transcription", selection: $txProvider) {
+                    ForEach(TranscriptionProvider.allCases) { Text($0.displayName).tag($0) }
+                }
+                .labelsHidden()
+
+                Text(txProvider.helpText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if txProvider.needsKey {
+                    Text(txProvider.keyLabel).font(.subheadline.bold()).padding(.top, 2)
+                    SecureField("API key", text: $deepgramKey)
+                        .textFieldStyle(.roundedBorder)
+                    if let url = txProvider.signupURL {
+                        Link("Get a Deepgram API key", destination: url).font(.caption)
+                    }
+                }
+            }
+
+            Divider()
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Minutes Provider")
@@ -67,7 +95,10 @@ struct SettingsView: View {
         }
         .padding(24)
         .frame(width: 460)
-        .onAppear { loadFields(for: provider) }
+        .onAppear {
+            loadFields(for: provider)
+            deepgramKey = KeychainStore.load(account: txProvider.keychainAccount) ?? ""
+        }
     }
 
     private func loadFields(for provider: LLMProvider) {
@@ -87,6 +118,15 @@ struct SettingsView: View {
         }
         MinutesSettings.setModel(model, for: provider)
         MinutesSettings.provider = provider
+
+        let trimmedDeepgram = deepgramKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedDeepgram.isEmpty {
+            KeychainStore.delete(account: TranscriptionProvider.deepgram.keychainAccount)
+        } else {
+            KeychainStore.save(trimmedDeepgram, account: TranscriptionProvider.deepgram.keychainAccount)
+        }
+        TranscriptionSettings.provider = txProvider
+
         dismiss()
     }
 }

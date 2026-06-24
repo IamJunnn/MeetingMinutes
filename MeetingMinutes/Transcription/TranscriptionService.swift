@@ -28,12 +28,9 @@ final class TranscriptionService: ObservableObject {
     func transcribe(folder: URL) async {
         lines = []
         do {
-            phase = .downloadingModel(modelManager.isModelDownloaded ? 1 : 0)
-            let modelURL = try await modelManager.ensureModel { fraction in
-                Task { @MainActor in self.phase = .downloadingModel(fraction) }
-            }
+            let provider = TranscriptionSettings.provider
+            let transcriber = try await makeTranscriber(for: provider)
 
-            let transcriber = LocalWhisperTranscriber(modelURL: modelURL)
             let fm = FileManager.default
             let micURL = folder.appendingPathComponent("mic.m4a")
             let systemURL = folder.appendingPathComponent("system.m4a")
@@ -42,14 +39,17 @@ final class TranscriptionService: ObservableObject {
             phase = .transcribing(0)
 
             // "You" track (mic) covers the first half of the progress bar, the
-            // "Participant" track (system audio) the second half.
+            // participant track (system audio) the second half. The participant
+            // track is diarized when the engine supports it, splitting the mixed
+            // remote audio into "Speaker 1", "Speaker 2", …
             if fm.fileExists(atPath: micURL.path) {
-                merged += try await transcriber.transcribe(audioURL: micURL, speaker: "You") { fraction in
+                merged += try await transcriber.transcribe(audioURL: micURL, speaker: "You", diarize: false) { fraction in
                     Task { @MainActor in self.phase = .transcribing(fraction * 0.5) }
                 }
             }
             if fm.fileExists(atPath: systemURL.path) {
-                merged += try await transcriber.transcribe(audioURL: systemURL, speaker: "Participant") { fraction in
+                let label = provider.diarizes ? "Speaker" : "Participant"
+                merged += try await transcriber.transcribe(audioURL: systemURL, speaker: label, diarize: provider.diarizes) { fraction in
                     Task { @MainActor in self.phase = .transcribing(0.5 + fraction * 0.5) }
                 }
             }
@@ -57,10 +57,45 @@ final class TranscriptionService: ObservableObject {
             merged.sort { $0.start < $1.start }
             lines = merged
             try write(merged, to: folder)
+
+            // Diarization gives anonymous "Speaker N" labels — try to name them
+            // from the conversation. Best-effort: never blocks completion.
+            if provider.diarizes {
+                await inferSpeakerNames(for: merged, in: folder)
+            }
+
             phase = .completed
         } catch {
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Build the transcriber for the chosen provider, downloading the whisper
+    /// model first for the local engine (Deepgram needs no model).
+    private func makeTranscriber(for provider: TranscriptionProvider) async throws -> Transcriber {
+        switch provider {
+        case .local:
+            phase = .downloadingModel(modelManager.isModelDownloaded ? 1 : 0)
+            let modelURL = try await modelManager.ensureModel { fraction in
+                Task { @MainActor in self.phase = .downloadingModel(fraction) }
+            }
+            return LocalWhisperTranscriber(modelURL: modelURL)
+        case .deepgram:
+            guard let key = KeychainStore.load(account: provider.keychainAccount), !key.isEmpty else {
+                throw LLMError.missingKey(provider: "Deepgram")
+            }
+            return DeepgramTranscriber(apiKey: key)
+        }
+    }
+
+    /// Ask the active LLM to name the diarized speakers and persist the result.
+    /// Silently does nothing if no LLM is configured or nothing was identified.
+    private func inferSpeakerNames(for lines: [TranscriptLine], in folder: URL) async {
+        let labels = Set(lines.map(\.speaker)).filter { $0.hasPrefix("Speaker ") }
+        guard !labels.isEmpty, let client = try? LLMClientFactory.makeActive() else { return }
+        guard let names = try? await SpeakerNamer.inferNames(from: lines, labels: labels, using: client),
+              !names.isEmpty else { return }
+        SpeakerNamesStore.save(names, in: folder)
     }
 
     private func write(_ lines: [TranscriptLine], to folder: URL) throws {
