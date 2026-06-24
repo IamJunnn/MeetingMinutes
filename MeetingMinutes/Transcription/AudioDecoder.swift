@@ -38,7 +38,7 @@ enum AudioDecoder {
         }
 
         var samples: [Float] = []
-        samples.reserveCapacity(Int(Double(file.length) * 16_000 / inputFormat.sampleRate) + inputChunkFrames.hashValue)
+        samples.reserveCapacity(Int(Double(file.length) * 16_000 / inputFormat.sampleRate) + Int(inputChunkFrames))
 
         while true {
             outputBuffer.frameLength = 0

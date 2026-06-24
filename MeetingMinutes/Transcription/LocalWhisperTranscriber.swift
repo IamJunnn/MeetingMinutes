@@ -22,6 +22,9 @@ final class LocalWhisperTranscriber: Transcriber {
 
         let params = WhisperParams.default
         params.language = language
+        // whisper.cpp defaults to min(4, cores); use all available cores so a
+        // long meeting transcribes in a fraction of the time on Apple Silicon.
+        params.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount))
         let whisper = Whisper(fromFileURL: modelURL, withParams: params)
 
         let delegate = ProgressDelegate(onProgress: progress)
