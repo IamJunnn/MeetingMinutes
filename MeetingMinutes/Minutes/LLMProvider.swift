@@ -66,6 +66,14 @@ enum LLMProvider: String, CaseIterable, Identifiable {
 enum MinutesSettings {
     private static let providerKey = "minutes.provider"
 
+    /// What the app user ("You") is called in transcripts and minutes. Blank
+    /// keeps the default "You" label.
+    static let userNameKey = "user.displayName"
+    static var userName: String {
+        get { UserDefaults.standard.string(forKey: userNameKey) ?? "" }
+        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: userNameKey) }
+    }
+
     static var provider: LLMProvider {
         get { LLMProvider(rawValue: UserDefaults.standard.string(forKey: providerKey) ?? "") ?? .anthropic }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: providerKey) }

@@ -38,7 +38,7 @@ final class MinutesService: ObservableObject {
     }
 
     private static let systemPrompt = """
-    You are an expert meeting-minutes assistant. You receive a meeting transcript whose lines are labeled by speaker, each with a timestamp. "You" is the person running the app. Other speakers are either named (e.g. "Sarah") or, when their name is unknown, labeled "Speaker 1", "Speaker 2", … — attribute decisions and action items to whichever label/name spoke them.
+    You are an expert meeting-minutes assistant. You receive a meeting transcript whose lines are labeled by speaker, each with a timestamp. The person running the app is labeled "You" (or by their own name, if they set one) — refer to them by that exact label and NEVER guess, add, or annotate it with a real name (e.g. do not write "You (Jane)"). Other speakers are either named (e.g. "Sarah") or, when their name is unknown, labeled "Speaker 1", "Speaker 2", … — attribute decisions and action items to whichever label/name spoke them.
 
     Produce concise, well-structured meeting minutes in Markdown with exactly these three sections:
 

@@ -11,6 +11,8 @@ struct MeetingDetailView: View {
     @StateObject private var minutes = MinutesService()
     @StateObject private var player = AudioPlayer()
 
+    @AppStorage(MinutesSettings.userNameKey) private var userName = ""
+
     @State private var lines: [TranscriptLine] = []
     @State private var speakerNames: [String: String] = [:]
     @State private var minutesMarkdown: String = ""
@@ -102,7 +104,7 @@ struct MeetingDetailView: View {
                 Text("Not transcribed yet.").font(.callout).foregroundStyle(.secondary)
             } else {
                 speakerEditor
-                TranscriptListView(lines: lines, names: speakerNames).frame(height: 280)
+                TranscriptListView(lines: lines, names: effectiveNames).frame(height: 280)
             }
         }
     }
@@ -276,10 +278,20 @@ struct MeetingDetailView: View {
 
     /// Transcript with canonical speaker labels swapped for their display names,
     /// so the generated minutes refer to people by name rather than "Speaker 2".
+    /// Speaker → display name, including the user's own name for the "You"
+    /// label when they've set one. Drives both the transcript and the minutes.
+    private var effectiveNames: [String: String] {
+        guard !userName.isEmpty else { return speakerNames }
+        var names = speakerNames
+        names["You"] = userName
+        return names
+    }
+
     private var namedLines: [TranscriptLine] {
-        guard !speakerNames.isEmpty else { return lines }
+        let names = effectiveNames
+        guard !names.isEmpty else { return lines }
         return lines.map { line in
-            guard let name = speakerNames[line.speaker] else { return line }
+            guard let name = names[line.speaker] else { return line }
             return TranscriptLine(speaker: name, start: line.start, end: line.end, text: line.text)
         }
     }
