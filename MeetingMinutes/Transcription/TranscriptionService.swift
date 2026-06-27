@@ -55,6 +55,7 @@ final class TranscriptionService: ObservableObject {
             }
 
             merged.sort { $0.start < $1.start }
+            merged = Self.removingEcho(from: merged)
             lines = merged
             try write(merged, to: folder)
 
@@ -96,6 +97,43 @@ final class TranscriptionService: ObservableObject {
         guard let names = try? await SpeakerNamer.inferNames(from: lines, labels: labels, using: client),
               !names.isEmpty else { return }
         SpeakerNamesStore.save(names, in: folder)
+    }
+
+    // MARK: - Echo removal
+
+    /// Drop mic ("You") segments that are really the participants' audio echoing
+    /// back through the speakers into the microphone. When a "You" line overlaps
+    /// in time with a participant line and shares most of its words, the "You"
+    /// copy is acoustic bleed, not the user — so we discard it. A software
+    /// backstop behind the hardware echo cancellation applied during capture.
+    private static func removingEcho(from lines: [TranscriptLine]) -> [TranscriptLine] {
+        let participantLines = lines.filter { $0.speaker != "You" }
+        guard !participantLines.isEmpty else { return lines }
+        return lines.filter { line in
+            guard line.speaker == "You" else { return true }
+            return !participantLines.contains { other in
+                overlapsInTime(line, other) && sharesMostWords(line.text, other.text)
+            }
+        }
+    }
+
+    /// True when two segments' time spans overlap, allowing 1s of slack for the
+    /// small delay between speaker output and the mic picking it back up.
+    private static func overlapsInTime(_ a: TranscriptLine, _ b: TranscriptLine, slack: TimeInterval = 1) -> Bool {
+        a.start < b.end + slack && b.start < a.end + slack
+    }
+
+    /// True when ≥60% of the shorter segment's words appear in the longer one.
+    /// Containment (not Jaccard) on purpose: an echoed "You" line is often
+    /// padded with extra ASR filler, so the participant line is a subset of it.
+    private static func sharesMostWords(_ x: String, _ y: String, threshold: Double = 0.6) -> Bool {
+        let sx = Set(x.split(separator: " "))
+        let sy = Set(y.split(separator: " "))
+        let shorter = sx.count <= sy.count ? sx : sy
+        let longer = sx.count <= sy.count ? sy : sx
+        guard shorter.count >= 2 else { return false }
+        let overlap = shorter.intersection(longer).count
+        return Double(overlap) / Double(shorter.count) >= threshold
     }
 
     private func write(_ lines: [TranscriptLine], to folder: URL) throws {

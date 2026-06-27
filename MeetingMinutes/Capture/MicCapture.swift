@@ -13,8 +13,22 @@ final class MicCapture {
 
     func start(outputURL: URL) throws {
         let input = engine.inputNode
-        // The format the tap will deliver buffers in. We match the file's
-        // settings to this so AVAudioFile can write without a format mismatch.
+
+        // Enable macOS voice processing on the mic input: acoustic echo
+        // cancellation (so meeting audio played back through the speakers
+        // doesn't bleed into the mic and get mislabeled as "You"), plus noise
+        // suppression and automatic gain control. Best-effort — if it can't be
+        // enabled we fall back to raw capture rather than failing the recording.
+        do {
+            try input.setVoiceProcessingEnabled(true)
+        } catch {
+            logger.error("Voice processing unavailable, capturing raw mic: \(error.localizedDescription)")
+        }
+
+        // The format the tap will deliver buffers in. Query it *after* enabling
+        // voice processing — that forces its own processing format (typically
+        // 48 kHz) — and match the file's settings to it so AVAudioFile can write
+        // without a format mismatch.
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0 else { throw CaptureError.noMicrophone }
 

@@ -48,7 +48,9 @@ final class LocalWhisperTranscriber: Transcriber {
         let segments = try await whisper.transcribe(audioFrames: frames)
 
         return segments.compactMap { segment in
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = segment.text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .collapsingRepeatedTokens()
             guard !text.isEmpty, !Self.isNonSpeech(text) else { return nil }
             return TranscriptLine(
                 speaker: speaker,

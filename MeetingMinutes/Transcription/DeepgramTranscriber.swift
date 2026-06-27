@@ -50,6 +50,7 @@ struct DeepgramTranscriber: Transcriber {
             let text = current
                 .map { $0.punctuatedWord ?? $0.word }
                 .joined(separator: " ")
+                .collapsingRepeatedTokens()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             current = []
             guard !text.isEmpty else { return }
