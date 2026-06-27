@@ -10,10 +10,25 @@ struct SettingsView: View {
     @State private var txProvider: TranscriptionProvider = TranscriptionSettings.provider
     @State private var deepgramKey: String = ""
 
+    @State private var userName: String = MinutesSettings.userName
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Settings")
                 .font(.title2.bold())
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Your Name")
+                    .font(.headline)
+                TextField("You", text: $userName)
+                    .textFieldStyle(.roundedBorder)
+                Text("How you're labeled in transcripts and minutes. Leave blank to stay \"You\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Transcription")
@@ -118,6 +133,7 @@ struct SettingsView: View {
         }
         MinutesSettings.setModel(model, for: provider)
         MinutesSettings.provider = provider
+        MinutesSettings.userName = userName
 
         let trimmedDeepgram = deepgramKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedDeepgram.isEmpty {
