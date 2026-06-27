@@ -31,6 +31,12 @@ struct Meeting: Identifiable, Hashable {
         (try? String(contentsOf: minutesURL, encoding: .utf8)) ?? ""
     }
 
+    /// Display names for diarized speakers, keyed by canonical label
+    /// ("Speaker 1" → "Sarah"). Empty for on-device (non-diarized) transcripts.
+    func loadSpeakerNames() -> [String: String] {
+        SpeakerNamesStore.load(in: folder)
+    }
+
     static let folderFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
