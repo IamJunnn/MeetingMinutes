@@ -14,6 +14,8 @@ struct MeetingDetailView: View {
     @State private var lines: [TranscriptLine] = []
     @State private var speakerNames: [String: String] = [:]
     @State private var minutesMarkdown: String = ""
+    @State private var isEditingMinutes = false
+    @State private var minutesDraft = ""
     @State private var copied = false
 
     var body: some View {
@@ -163,61 +165,105 @@ struct MeetingDetailView: View {
         HStack {
             Text("Minutes").font(.headline)
             Spacer()
-            if !minutesMarkdown.isEmpty {
-                Button {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(exportText, forType: .string)
-                    copied = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        copied = false
-                    }
-                } label: {
-                    Label(copied ? "Copied!" : "Copy",
-                          systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .foregroundStyle(copied ? Color.green : Color.accentColor)
-                }
-                .buttonStyle(.link)
-
-                ShareLink(item: exportText, subject: Text("Meeting Minutes — \(meeting.title)")) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-                .buttonStyle(.link)
-            }
-            if !minutes.isGenerating && !lines.isEmpty {
-                Button(minutesMarkdown.isEmpty ? "Generate Minutes" : "Regenerate") {
-                    Task {
-                        await minutes.generate(from: namedLines, folder: meeting.folder)
-                        if case .completed = minutes.phase { minutesMarkdown = minutes.markdown }
-                        onChanged()
-                    }
-                }
-            }
-        }
-
-        switch minutes.phase {
-        case .generating:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Generating minutes with Claude…").font(.footnote).foregroundStyle(.secondary)
-            }
-        case .failed(let message):
-            errorLabel(message)
-        default:
-            if minutesMarkdown.isEmpty {
-                Text(lines.isEmpty ? "Transcribe first, then generate minutes." : "No minutes yet.")
-                    .font(.callout).foregroundStyle(.secondary)
+            if isEditingMinutes {
+                Button("Cancel") { isEditingMinutes = false }
+                    .buttonStyle(.link)
+                Button("Save", action: saveEditedMinutes)
+                    .buttonStyle(.link)
             } else {
-                MarkdownView(markdown: minutesMarkdown)
-                    .textSelection(.enabled)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+                if !minutesMarkdown.isEmpty {
+                    Button { startEditingMinutes() } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .buttonStyle(.link)
+
+                    Button {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(exportText, forType: .string)
+                        copied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            copied = false
+                        }
+                    } label: {
+                        Label(copied ? "Copied!" : "Copy",
+                              systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .foregroundStyle(copied ? Color.green : Color.accentColor)
+                    }
+                    .buttonStyle(.link)
+
+                    ShareLink(item: exportText, subject: Text("Meeting Minutes — \(meeting.title)")) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.link)
+                }
+                if !minutes.isGenerating && !lines.isEmpty {
+                    Button(minutesMarkdown.isEmpty ? "Generate Minutes" : "Regenerate") {
+                        Task {
+                            await minutes.generate(from: namedLines, folder: meeting.folder)
+                            if case .completed = minutes.phase { minutesMarkdown = minutes.markdown }
+                            onChanged()
+                        }
+                    }
+                }
             }
         }
+
+        if isEditingMinutes {
+            minutesEditor
+        } else {
+            switch minutes.phase {
+            case .generating:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Generating minutes with Claude…").font(.footnote).foregroundStyle(.secondary)
+                }
+            case .failed(let message):
+                errorLabel(message)
+            default:
+                if minutesMarkdown.isEmpty {
+                    Text(lines.isEmpty ? "Transcribe first, then generate minutes." : "No minutes yet.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    MarkdownView(markdown: minutesMarkdown)
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+                }
+            }
+        }
+    }
+
+    /// Raw-Markdown editor shown when correcting the minutes by hand.
+    private var minutesEditor: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextEditor(text: $minutesDraft)
+                .font(.system(.callout, design: .monospaced))
+                .frame(minHeight: 260)
+                .padding(8)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+            Text("Edit the Markdown directly — `##` headings, `-` bullets, `**bold**`.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func startEditingMinutes() {
+        minutesDraft = minutesMarkdown
+        isEditingMinutes = true
+    }
+
+    /// Persist the hand-edited minutes back to `minutes.md` and re-render.
+    private func saveEditedMinutes() {
+        minutesMarkdown = minutesDraft
+        try? minutesMarkdown.write(to: meeting.minutesURL, atomically: true, encoding: .utf8)
+        isEditingMinutes = false
+        onChanged()
     }
 
     // MARK: - Helpers
