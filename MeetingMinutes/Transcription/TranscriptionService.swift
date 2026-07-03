@@ -32,26 +32,39 @@ final class TranscriptionService: ObservableObject {
             let transcriber = try await makeTranscriber(for: provider)
 
             let fm = FileManager.default
-            let micURL = folder.appendingPathComponent("mic.m4a")
             let systemURL = folder.appendingPathComponent("system.m4a")
 
             var merged: [TranscriptLine] = []
             phase = .transcribing(0)
+
+            // Use the echo-cancelled mic when speaker bleed was found (cached;
+            // computed on first use) so the participants' voices leaking into
+            // the mic aren't transcribed as phantom "You" lines.
+            let micURL = await EchoCanceller.shared.cleanedMicURL(in: folder)
+
+            // Each track's timestamps are relative to its own file, but the
+            // tracks start at different moments — shift the later one so the
+            // merged transcript shares a single timeline.
+            let offset = EchoCanceller.alignment(in: folder)?.systemOffsetSeconds ?? 0
+            let micShift = max(0, -offset)
+            let systemShift = max(0, offset)
 
             // "You" track (mic) covers the first half of the progress bar, the
             // participant track (system audio) the second half. The participant
             // track is diarized when the engine supports it, splitting the mixed
             // remote audio into "Speaker 1", "Speaker 2", …
             if fm.fileExists(atPath: micURL.path) {
-                merged += try await transcriber.transcribe(audioURL: micURL, speaker: "You", diarize: false) { fraction in
+                let micLines = try await transcriber.transcribe(audioURL: micURL, speaker: "You", diarize: false) { fraction in
                     Task { @MainActor in self.phase = .transcribing(fraction * 0.5) }
                 }
+                merged += Self.shifted(micLines, by: micShift)
             }
             if fm.fileExists(atPath: systemURL.path) {
                 let label = provider.diarizes ? "Speaker" : "Participant"
-                merged += try await transcriber.transcribe(audioURL: systemURL, speaker: label, diarize: provider.diarizes) { fraction in
+                let systemLines = try await transcriber.transcribe(audioURL: systemURL, speaker: label, diarize: provider.diarizes) { fraction in
                     Task { @MainActor in self.phase = .transcribing(0.5 + fraction * 0.5) }
                 }
+                merged += Self.shifted(systemLines, by: systemShift)
             }
 
             merged.sort { $0.start < $1.start }
@@ -99,13 +112,21 @@ final class TranscriptionService: ObservableObject {
         SpeakerNamesStore.save(names, in: folder)
     }
 
+    /// The same lines moved later by `offset` seconds (no-op for zero).
+    private static func shifted(_ lines: [TranscriptLine], by offset: TimeInterval) -> [TranscriptLine] {
+        guard offset > 0 else { return lines }
+        return lines.map {
+            TranscriptLine(speaker: $0.speaker, start: $0.start + offset, end: $0.end + offset, text: $0.text)
+        }
+    }
+
     // MARK: - Echo removal
 
     /// Drop mic ("You") segments that are really the participants' audio echoing
     /// back through the speakers into the microphone. When a "You" line overlaps
     /// in time with a participant line and shares most of its words, the "You"
-    /// copy is acoustic bleed, not the user — so we discard it. A software
-    /// backstop behind the hardware echo cancellation applied during capture.
+    /// copy is acoustic bleed, not the user — so we discard it. A text-level
+    /// backstop behind EchoCanceller's audio-level cleanup.
     private static func removingEcho(from lines: [TranscriptLine]) -> [TranscriptLine] {
         let participantLines = lines.filter { $0.speaker != "You" }
         guard !participantLines.isEmpty else { return lines }

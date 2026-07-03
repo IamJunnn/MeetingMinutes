@@ -61,8 +61,19 @@ final class RecordingController: ObservableObject {
             let folder = try makeSessionFolder()
             currentFolder = folder
 
-            try mic.start(outputURL: folder.appendingPathComponent("mic.m4a"))
-            try await system.start(outputURL: folder.appendingPathComponent("system.m4a"))
+            // Diagnostic toggles (env vars) to isolate which capture path ducks the
+            // meeting audio: launch with MM_NO_SYSTEM=1 to run mic-only, or
+            // MM_NO_MIC=1 to run system-audio-only. Absent → both run normally.
+            let env = ProcessInfo.processInfo.environment
+            let skipMic = env["MM_NO_MIC"] == "1"
+            let skipSystem = env["MM_NO_SYSTEM"] == "1"
+
+            if !skipMic {
+                try mic.start(outputURL: folder.appendingPathComponent("mic.m4a"))
+            }
+            if !skipSystem {
+                try await system.start(outputURL: folder.appendingPathComponent("system.m4a"))
+            }
 
             startDate = Date()
             elapsed = 0
@@ -91,6 +102,18 @@ final class RecordingController: ObservableObject {
         stopTimer()
         mic.stop()
         await system.stop()
+        if let folder = currentFolder {
+            // Record when each track's first sample actually arrived — system
+            // capture starts later than the mic, and EchoCanceller uses this
+            // gap to align the tracks.
+            SessionTimes(micFirstSampleHostSeconds: mic.firstSampleHostSeconds,
+                         systemFirstSampleHostSeconds: system.firstSampleHostSeconds).save(in: folder)
+            // Warm the echo-cancelled mic now so playback and transcription
+            // don't pay for the analysis on first use.
+            Task.detached(priority: .utility) {
+                _ = await EchoCanceller.shared.cleanedMicURL(in: folder)
+            }
+        }
         lastRecordingFolder = currentFolder
         state = .idle
     }

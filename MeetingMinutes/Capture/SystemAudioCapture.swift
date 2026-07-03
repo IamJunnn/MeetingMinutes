@@ -17,8 +17,24 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private var writer: AVAssetWriter?
     private var audioInput: AVAssetWriterInput?
+    private var rawFile: AVAudioFile?           // lossless sidecar, see start()
+    private var rawConverter: AVAudioConverter?
+
+    private let firstSampleLock = NSLock()
+    private var _firstSampleHostSeconds: Double?
+
+    /// Host-clock time (seconds) of the first captured sample — ScreenCaptureKit
+    /// timestamps are on the host clock, so this pairs with the mic track's
+    /// timestamp to measure how much later system capture actually began.
+    var firstSampleHostSeconds: Double? {
+        firstSampleLock.lock()
+        defer { firstSampleLock.unlock() }
+        return _firstSampleHostSeconds
+    }
 
     func start(outputURL: URL) async throws {
+        // No lock needed: the stream (and thus the writing side) isn't running yet.
+        _firstSampleHostSeconds = nil
         // Requesting shareable content triggers (and requires) the Screen
         // Recording permission. ScreenCaptureKit needs a display to attach to.
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -50,6 +66,19 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         self.writer = writer
         self.audioInput = input
 
+        // Lossless sidecar for the offline echo canceller: cancelling through
+        // the AAC round-trip costs ~10 dB of depth, so EchoCanceller prefers
+        // this copy and deletes it when its analysis is done. Best-effort —
+        // without it the canceller falls back to the AAC track.
+        let rawSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatAppleLossless,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 2
+        ]
+        let rawURL = outputURL.deletingLastPathComponent().appendingPathComponent("system-raw.m4a")
+        self.rawFile = try? AVAudioFile(forWriting: rawURL, settings: rawSettings)
+        self.rawConverter = nil
+
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
         self.stream = stream
@@ -70,7 +99,13 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private func finishWriting() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             sampleQueue.async { [weak self] in
-                guard let self, let writer = self.writer, let input = self.audioInput else {
+                guard let self else {
+                    continuation.resume()
+                    return
+                }
+                self.rawFile = nil      // closes the sidecar
+                self.rawConverter = nil
+                guard let writer = self.writer, let input = self.audioInput else {
                     continuation.resume()
                     return
                 }
@@ -100,12 +135,48 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
               let input = self.audioInput else { return }
 
         if writer.status == .unknown {
+            let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startWriting()
-            writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+            writer.startSession(atSourceTime: start)
+            firstSampleLock.lock()
+            _firstSampleHostSeconds = CMTimeGetSeconds(start)
+            firstSampleLock.unlock()
         }
 
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
         input.append(sampleBuffer)
+        writeRawSidecar(sampleBuffer)
+    }
+
+    /// Append the sample buffer to the lossless sidecar, converting from the
+    /// stream's PCM layout to the file's processing format when they differ.
+    private func writeRawSidecar(_ sampleBuffer: CMSampleBuffer) {
+        guard let rawFile,
+              let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+        let sourceFormat = AVAudioFormat(cmAudioFormatDescription: description)
+        guard frames > 0,
+              let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frames) else { return }
+        source.frameLength = frames
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frames),
+                                                           into: source.mutableAudioBufferList) == noErr else { return }
+
+        if source.format == rawFile.processingFormat {
+            try? rawFile.write(from: source)
+            return
+        }
+        if rawConverter == nil || rawConverter?.inputFormat != source.format {
+            rawConverter = AVAudioConverter(from: source.format, to: rawFile.processingFormat)
+        }
+        guard let converter = rawConverter,
+              let converted = AVAudioPCMBuffer(pcmFormat: rawFile.processingFormat, frameCapacity: frames) else { return }
+        do {
+            try converter.convert(to: converted, from: source)
+            try rawFile.write(from: converted)
+        } catch {
+            logger.error("Lossless sidecar write failed: \(error.localizedDescription)")
+            self.rawFile = nil   // don't spam per-buffer errors; canceller falls back to AAC
+        }
     }
 
     // MARK: - SCStreamDelegate
