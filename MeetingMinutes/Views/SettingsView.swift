@@ -12,6 +12,12 @@ struct SettingsView: View {
 
     @State private var userName: String = MinutesSettings.userName
 
+    /// Keys as loaded from the keychain, to tell "user cleared the field"
+    /// apart from "load failed / nothing stored" when deciding to delete.
+    @State private var loadedApiKey: String = ""
+    @State private var loadedDeepgramKey: String = ""
+    @State private var saveError: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Settings")
@@ -112,23 +118,39 @@ struct SettingsView: View {
         .frame(width: 460)
         .onAppear {
             loadFields(for: provider)
-            deepgramKey = KeychainStore.load(account: txProvider.keychainAccount) ?? ""
+            loadedDeepgramKey = KeychainStore.load(account: txProvider.keychainAccount) ?? ""
+            deepgramKey = loadedDeepgramKey
+        }
+        .alert("Couldn't save API key", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(saveError ?? "")
         }
     }
 
     private func loadFields(for provider: LLMProvider) {
-        apiKey = provider.needsKey ? (KeychainStore.load(account: provider.keychainAccount) ?? "") : ""
+        loadedApiKey = provider.needsKey ? (KeychainStore.load(account: provider.keychainAccount) ?? "") : ""
+        apiKey = loadedApiKey
         let stored = MinutesSettings.model(for: provider)
         model = (stored == provider.defaultModel) ? "" : stored
     }
 
     private func save() {
+        var errors: [String] = []
+
         if provider.needsKey {
             let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                KeychainStore.delete(account: provider.keychainAccount)
-            } else {
-                KeychainStore.save(trimmed, account: provider.keychainAccount)
+                // Only delete if the user cleared a key we actually showed them;
+                // an empty field after a failed load must not wipe the stored key.
+                if !loadedApiKey.isEmpty {
+                    KeychainStore.delete(account: provider.keychainAccount)
+                }
+            } else if let error = KeychainStore.save(trimmed, account: provider.keychainAccount) {
+                errors.append("\(provider.keyLabel): \(error)")
             }
         }
         MinutesSettings.setModel(model, for: provider)
@@ -137,13 +159,19 @@ struct SettingsView: View {
 
         let trimmedDeepgram = deepgramKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedDeepgram.isEmpty {
-            KeychainStore.delete(account: TranscriptionProvider.deepgram.keychainAccount)
-        } else {
-            KeychainStore.save(trimmedDeepgram, account: TranscriptionProvider.deepgram.keychainAccount)
+            if !loadedDeepgramKey.isEmpty {
+                KeychainStore.delete(account: TranscriptionProvider.deepgram.keychainAccount)
+            }
+        } else if let error = KeychainStore.save(trimmedDeepgram, account: TranscriptionProvider.deepgram.keychainAccount) {
+            errors.append("\(TranscriptionProvider.deepgram.keyLabel): \(error)")
         }
         TranscriptionSettings.provider = txProvider
 
-        dismiss()
+        if errors.isEmpty {
+            dismiss()
+        } else {
+            saveError = errors.joined(separator: "\n")
+        }
     }
 }
 
