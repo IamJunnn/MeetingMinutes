@@ -1,6 +1,8 @@
+import AppKit
 import AVFoundation
 import CoreGraphics
 import Foundation
+import ScreenCaptureKit
 import SwiftUI
 
 /// Orchestrates a recording session: requests permissions, starts both capture
@@ -8,8 +10,15 @@ import SwiftUI
 ///
 /// Each session lives in its own timestamped folder under Application Support:
 ///   …/MeetingMinutes/Recordings/<timestamp>/{mic.m4a, system.m4a}
+///
+/// There is exactly one recorder for the app (`shared`), owned above any view:
+/// a recording must survive the user clicking around the library. When a view
+/// owned it, navigating away deallocated the captures mid-recording, which
+/// left the system-audio file without its index (unplayable, untranscribable).
 @MainActor
 final class RecordingController: ObservableObject {
+    static let shared = RecordingController()
+
     enum State: Equatable {
         case idle
         case recording
@@ -17,15 +26,47 @@ final class RecordingController: ObservableObject {
         case error(String)
     }
 
+    /// Why the last recording ended.
+    enum StopReason: Equatable {
+        case user
+        /// Both tracks were quiet for `silenceTimeout` — the meeting was over
+        /// and nobody pressed Stop.
+        case silence
+        /// The app was quit while recording; the files were finalized first.
+        case quit
+    }
+
+    /// How long both tracks must be silent before a recording stops itself.
+    static let silenceTimeout: TimeInterval = 10 * 60
+
     @Published private(set) var state: State = .idle
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var lastRecordingFolder: URL?
+    @Published private(set) var lastStopReason: StopReason?
+    /// Folder of the in-progress recording, nil when idle. The library hides
+    /// it until the files are finalized.
+    @Published private(set) var activeFolder: URL?
+    /// Seconds since either track last carried sound (0 while idle).
+    @Published private(set) var silenceSeconds: TimeInterval = 0
+    /// When true, only the mic keeps a recording alive. For a meeting in the
+    /// room, whatever the Mac plays (a video, music) is not the meeting, and
+    /// counting it kept a forgotten recording running for hours.
+    var ignoresSystemAudio = false
 
     private let mic = MicCapture()
     private let system = SystemAudioCapture()
     private var startDate: Date?
     private var timer: Timer?
     private var currentFolder: URL?
+
+    private init() {
+        // Shutdown, restart, or logout: start finalizing now instead of waiting
+        // for the quit that follows, which kills an app without a termination
+        // hook mid-write.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.prepareForTermination() }
+        }
+    }
 
     var isRecording: Bool { state == .recording }
     var isBusy: Bool { state == .finishing }
@@ -49,17 +90,20 @@ final class RecordingController: ObservableObject {
                 return
             }
 
-            // ScreenCaptureKit needs Screen Recording permission for system
-            // audio. Check first so we can show clear guidance instead of a
-            // cryptic "declined" error mid-capture.
-            guard CGPreflightScreenCaptureAccess() else {
-                _ = CGRequestScreenCaptureAccess()   // prompts on first run
+            // ScreenCaptureKit needs Screen Recording permission for system audio. CGPreflightScreenCaptureAccess
+            // reports "denied" on recent macOS until the app has actually touched ScreenCaptureKit, even when the
+            // toggle is on, so probe the real thing: listing shareable content succeeds only with the grant.
+            do {
+                _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            } catch {
+                _ = CGRequestScreenCaptureAccess()   // prompts on first run, or points at System Settings
                 state = .error(CaptureError.screenRecordingDenied.localizedDescription)
                 return
             }
 
             let folder = try makeSessionFolder()
             currentFolder = folder
+            activeFolder = folder
 
             // Diagnostic toggles (env vars) to isolate which capture path ducks the
             // meeting audio: launch with MM_NO_SYSTEM=1 to run mic-only, or
@@ -77,10 +121,11 @@ final class RecordingController: ObservableObject {
 
             startDate = Date()
             elapsed = 0
+            silenceSeconds = 0
             startTimer()
             state = .recording
         } catch {
-            mic.stop()
+            await mic.stop()
             await system.stop()
             cleanUpFailedSession()
             state = .error(error.localizedDescription)
@@ -94,13 +139,34 @@ final class RecordingController: ObservableObject {
         guard let folder = currentFolder else { return }
         try? FileManager.default.removeItem(at: folder)
         currentFolder = nil
+        activeFolder = nil
     }
 
     func stop() async {
+        await stop(reason: .user)
+    }
+
+    /// Finish a recording that's in flight so the app can exit without leaving
+    /// half-written files: stops if recording, waits if already finishing.
+    func prepareForTermination() async {
+        switch state {
+        case .recording:
+            await stop(reason: .quit)
+        case .finishing:
+            while state == .finishing {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        case .idle, .error:
+            break
+        }
+    }
+
+    private func stop(reason: StopReason) async {
         guard state == .recording else { return }
         state = .finishing
+        lastStopReason = reason
         stopTimer()
-        mic.stop()
+        await mic.stop()
         await system.stop()
         if let folder = currentFolder {
             // Record when each track's first sample actually arrived — system
@@ -115,6 +181,8 @@ final class RecordingController: ObservableObject {
             }
         }
         lastRecordingFolder = currentFolder
+        activeFolder = nil
+        silenceSeconds = 0
         state = .idle
     }
 
@@ -124,9 +192,30 @@ final class RecordingController: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.startDate else { return }
-                self.elapsed = Date().timeIntervalSince(start)
+                let now = Date()
+                self.elapsed = now.timeIntervalSince(start)
+                self.checkForSilence(at: now)
             }
         }
+    }
+
+    /// Auto-stop a forgotten recording: once neither the mic nor the system
+    /// mix has carried sound for `silenceTimeout`, the meeting is over. A
+    /// track that isn't running (diagnostic env vars) reports its start time,
+    /// so only live tracks hold the recording open.
+    private func checkForSilence(at now: Date) {
+        guard state == .recording else { return }
+        let lastSound = ignoresSystemAudio ? mic.lastActivityDate : max(mic.lastActivityDate, system.lastActivityDate)
+        silenceSeconds = max(0, now.timeIntervalSince(lastSound))
+        if silenceSeconds >= Self.silenceTimeout {
+            Task { await stop(reason: .silence) }
+        }
+    }
+
+    /// "HH:MM:SS" for the elapsed/silence displays.
+    static func clockString(_ interval: TimeInterval) -> String {
+        let total = Int(interval)
+        return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
 
     private func stopTimer() {

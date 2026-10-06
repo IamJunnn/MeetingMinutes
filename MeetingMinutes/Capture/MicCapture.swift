@@ -1,7 +1,8 @@
 import AVFoundation
 import OSLog
 
-/// Captures the local microphone and writes it to its own AAC (.m4a) file.
+/// Captures the local microphone and writes it to its own AAC (.m4a) file,
+/// fragmented so a recording cut off by a shutdown stays playable.
 ///
 /// We keep the microphone on a separate track from the system audio so that,
 /// downstream, transcription can attribute speech to "You" vs. "Participants"
@@ -9,11 +10,21 @@ import OSLog
 final class MicCapture {
     private let logger = Logger(subsystem: "build.ecoblox.MeetingMinutes", category: "MicCapture")
     private let engine = AVAudioEngine()
-    private var file: AVAudioFile?
-    private var rawFile: AVAudioFile?
+    private var file: FragmentedAudioWriter?
+    private var rawFile: FragmentedAudioWriter?
 
-    private let firstSampleLock = NSLock()
+    private let firstSampleLock = NSLock()   // also guards _lastActivityDate
     private var _firstSampleHostSeconds: Double?
+    private var _lastActivityDate = Date()
+
+    /// When the mic last picked up sound above the silence threshold (or when
+    /// capture started). RecordingController auto-stops a forgotten recording
+    /// once both tracks have been quiet for a while.
+    var lastActivityDate: Date {
+        firstSampleLock.lock()
+        defer { firstSampleLock.unlock() }
+        return _lastActivityDate
+    }
 
     /// Host-clock time (seconds) of the first captured sample — pairs with the
     /// system track's timestamp to align the two tracks on one timeline.
@@ -41,8 +52,8 @@ final class MicCapture {
         // offline by `EchoCanceller` after the recording, using the system track
         // as the reference signal.
 
-        // The format the tap will deliver buffers in — match the file's settings to
-        // it so AVAudioFile can write without a format mismatch.
+        // The format the tap will deliver buffers in; the file keeps its rate and
+        // channel count.
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0 else { throw CaptureError.noMicrophone }
 
@@ -52,7 +63,7 @@ final class MicCapture {
             AVNumberOfChannelsKey: format.channelCount,
             AVEncoderBitRateKey: 128_000
         ]
-        let file = try AVAudioFile(forWriting: outputURL, settings: settings)
+        let file = try FragmentedAudioWriter(url: outputURL, settings: settings)
         self.file = file
 
         // Lossless sidecar for the offline echo canceller: cancelling through
@@ -62,28 +73,28 @@ final class MicCapture {
         let rawSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatAppleLossless,
             AVSampleRateKey: format.sampleRate,
-            AVNumberOfChannelsKey: format.channelCount
+            AVNumberOfChannelsKey: format.channelCount,
+            AVEncoderBitDepthHintKey: 24
         ]
         let rawURL = outputURL.deletingLastPathComponent().appendingPathComponent("mic-raw.m4a")
-        self.rawFile = try? AVAudioFile(forWriting: rawURL, settings: rawSettings)
+        self.rawFile = try? FragmentedAudioWriter(url: rawURL, settings: rawSettings)
 
         firstSampleLock.lock()
         _firstSampleHostSeconds = nil
+        _lastActivityDate = Date()
         firstSampleLock.unlock()
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
             guard let self, let file = self.file else { return }
+            let active = AudioActivity.isActive(buffer)
             self.firstSampleLock.lock()
             if self._firstSampleHostSeconds == nil, when.isHostTimeValid {
                 self._firstSampleHostSeconds = AVAudioTime.seconds(forHostTime: when.hostTime)
             }
+            if active { self._lastActivityDate = Date() }
             self.firstSampleLock.unlock()
-            do {
-                try file.write(from: buffer)
-            } catch {
-                self.logger.error("Microphone write failed: \(error.localizedDescription)")
-            }
-            try? self.rawFile?.write(from: buffer)
+            file.append(buffer)
+            self.rawFile?.append(buffer)
         }
 
         engine.prepare()
@@ -91,12 +102,15 @@ final class MicCapture {
         logger.info("Microphone capture started at \(Int(format.sampleRate)) Hz, \(format.channelCount) ch")
     }
 
-    func stop() {
-        guard file != nil else { return }
+    func stop() async {
+        guard let file else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        file = nil
-        rawFile = nil
+        let rawFile = self.rawFile
+        self.file = nil
+        self.rawFile = nil
+        await file.finish()
+        await rawFile?.finish()
         logger.info("Microphone capture stopped")
     }
 }

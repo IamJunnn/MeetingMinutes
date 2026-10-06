@@ -4,7 +4,7 @@ import OSLog
 
 /// Captures system audio (everything coming out of the Mac's output — i.e. the
 /// other meeting participants) using ScreenCaptureKit, and writes it to its own
-/// AAC (.m4a) file.
+/// AAC (.m4a) file, fragmented so a recording cut off by a shutdown stays playable.
 ///
 /// We capture a display purely because ScreenCaptureKit requires a content
 /// filter to produce audio; the video frames are tiny and discarded. This works
@@ -15,13 +15,22 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let sampleQueue = DispatchQueue(label: "build.ecoblox.MeetingMinutes.systemaudio")
 
     private var stream: SCStream?
-    private var writer: AVAssetWriter?
-    private var audioInput: AVAssetWriterInput?
-    private var rawFile: AVAudioFile?           // lossless sidecar, see start()
-    private var rawConverter: AVAudioConverter?
+    // Touched only on `sampleQueue` once capture runs.
+    private var writer: FragmentedAudioWriter?
+    private var rawWriter: FragmentedAudioWriter?   // lossless sidecar, see start()
+    private var sawFirstSample = false
 
-    private let firstSampleLock = NSLock()
+    private let firstSampleLock = NSLock()   // also guards _lastActivityDate
     private var _firstSampleHostSeconds: Double?
+    private var _lastActivityDate = Date()
+
+    /// When the system mix last carried sound above the silence threshold (or
+    /// when capture started). See RecordingController's silence auto-stop.
+    var lastActivityDate: Date {
+        firstSampleLock.lock()
+        defer { firstSampleLock.unlock() }
+        return _lastActivityDate
+    }
 
     /// Host-clock time (seconds) of the first captured sample — ScreenCaptureKit
     /// timestamps are on the host clock, so this pairs with the mic track's
@@ -35,6 +44,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     func start(outputURL: URL) async throws {
         // No lock needed: the stream (and thus the writing side) isn't running yet.
         _firstSampleHostSeconds = nil
+        _lastActivityDate = Date()
         // Requesting shareable content triggers (and requires) the Screen
         // Recording permission. ScreenCaptureKit needs a display to attach to.
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -52,19 +62,14 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         config.queueDepth = 6
 
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 48_000,
             AVNumberOfChannelsKey: 2,
             AVEncoderBitRateKey: 128_000
         ]
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
-        input.expectsMediaDataInRealTime = true
-        guard writer.canAdd(input) else { throw CaptureError.cannotAddInput }
-        writer.add(input)
-        self.writer = writer
-        self.audioInput = input
+        self.writer = try FragmentedAudioWriter(url: outputURL, settings: settings)
+        sawFirstSample = false
 
         // Lossless sidecar for the offline echo canceller: cancelling through
         // the AAC round-trip costs ~10 dB of depth, so EchoCanceller prefers
@@ -73,11 +78,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let rawSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatAppleLossless,
             AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 2
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitDepthHintKey: 24
         ]
         let rawURL = outputURL.deletingLastPathComponent().appendingPathComponent("system-raw.m4a")
-        self.rawFile = try? AVAudioFile(forWriting: rawURL, settings: rawSettings)
-        self.rawConverter = nil
+        self.rawWriter = try? FragmentedAudioWriter(url: rawURL, settings: rawSettings)
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
@@ -97,86 +102,56 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func finishWriting() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        // Hand the writers over on the sample queue so no append races the close.
+        let writers: [FragmentedAudioWriter] = await withCheckedContinuation { continuation in
             sampleQueue.async { [weak self] in
-                guard let self else {
-                    continuation.resume()
-                    return
-                }
-                self.rawFile = nil      // closes the sidecar
-                self.rawConverter = nil
-                guard let writer = self.writer, let input = self.audioInput else {
-                    continuation.resume()
-                    return
-                }
-                input.markAsFinished()
-                if writer.status == .writing {
-                    writer.finishWriting {
-                        self.writer = nil
-                        self.audioInput = nil
-                        continuation.resume()
-                    }
-                } else {
-                    self.writer = nil
-                    self.audioInput = nil
-                    continuation.resume()
-                }
+                guard let self else { return continuation.resume(returning: []) }
+                let writers = [self.writer, self.rawWriter].compactMap { $0 }
+                self.writer = nil
+                self.rawWriter = nil
+                continuation.resume(returning: writers)
             }
         }
+        for writer in writers { await writer.finish() }
     }
 
     // MARK: - SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        // This runs on `sampleQueue`, the same queue we mutate the writer on.
+        // This runs on `sampleQueue`, the same queue the writers are handed over on.
         guard type == .audio,
               CMSampleBufferDataIsReady(sampleBuffer),
-              let writer = self.writer,
-              let input = self.audioInput else { return }
+              let writer = self.writer else { return }
 
-        if writer.status == .unknown {
-            let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            writer.startWriting()
-            writer.startSession(atSourceTime: start)
+        if !sawFirstSample {
+            sawFirstSample = true
             firstSampleLock.lock()
-            _firstSampleHostSeconds = CMTimeGetSeconds(start)
+            _firstSampleHostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
             firstSampleLock.unlock()
         }
+        writer.append(sampleBuffer)
+        rawWriter?.append(sampleBuffer)
 
-        guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
-        input.append(sampleBuffer)
-        writeRawSidecar(sampleBuffer)
+        guard let source = Self.pcmBuffer(from: sampleBuffer) else { return }
+        if AudioActivity.isActive(source) {
+            firstSampleLock.lock()
+            _lastActivityDate = Date()
+            firstSampleLock.unlock()
+        }
     }
 
-    /// Append the sample buffer to the lossless sidecar, converting from the
-    /// stream's PCM layout to the file's processing format when they differ.
-    private func writeRawSidecar(_ sampleBuffer: CMSampleBuffer) {
-        guard let rawFile,
-              let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+    /// Copy the sample buffer's PCM data into an AVAudioPCMBuffer in the
+    /// stream's native format.
+    private static func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return nil }
         let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
         let sourceFormat = AVAudioFormat(cmAudioFormatDescription: description)
         guard frames > 0,
-              let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frames) else { return }
+              let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frames) else { return nil }
         source.frameLength = frames
         guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frames),
-                                                           into: source.mutableAudioBufferList) == noErr else { return }
-
-        if source.format == rawFile.processingFormat {
-            try? rawFile.write(from: source)
-            return
-        }
-        if rawConverter == nil || rawConverter?.inputFormat != source.format {
-            rawConverter = AVAudioConverter(from: source.format, to: rawFile.processingFormat)
-        }
-        guard let converter = rawConverter,
-              let converted = AVAudioPCMBuffer(pcmFormat: rawFile.processingFormat, frameCapacity: frames) else { return }
-        do {
-            try converter.convert(to: converted, from: source)
-            try rawFile.write(from: converted)
-        } catch {
-            logger.error("Lossless sidecar write failed: \(error.localizedDescription)")
-            self.rawFile = nil   // don't spam per-buffer errors; canceller falls back to AAC
-        }
+                                                           into: source.mutableAudioBufferList) == noErr else { return nil }
+        return source
     }
 
     // MARK: - SCStreamDelegate

@@ -13,15 +13,20 @@ final class AudioPlayer: NSObject, ObservableObject {
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
-    func load(_ url: URL) {
-        guard url != loadedURL else { return }
+    /// Load `url` for playback. `loadedURL` is set only when the file opened,
+    /// so a failed load is retried next time instead of being mistaken for done.
+    @discardableResult
+    func load(_ url: URL) -> Bool {
+        if url == loadedURL && player != nil { return true }
         stop()
+        guard let player = try? AVAudioPlayer(contentsOf: url), player.duration > 0 else { return false }
+        player.delegate = self
+        player.prepareToPlay()
+        self.player = player
         loadedURL = url
-        player = try? AVAudioPlayer(contentsOf: url)
-        player?.delegate = self
-        player?.prepareToPlay()
-        duration = player?.duration ?? 0
+        duration = player.duration
         currentTime = 0
+        return true
     }
 
     func togglePlay() {
@@ -45,6 +50,7 @@ final class AudioPlayer: NSObject, ObservableObject {
     func stop() {
         player?.stop()
         player = nil
+        loadedURL = nil
         isPlaying = false
         currentTime = 0
         duration = 0

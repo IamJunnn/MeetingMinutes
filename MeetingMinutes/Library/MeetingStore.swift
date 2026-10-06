@@ -48,10 +48,24 @@ final class MeetingStore: ObservableObject {
                 hasMic: fm.fileExists(atPath: url.appendingPathComponent("mic.m4a").path),
                 hasSystem: fm.fileExists(atPath: url.appendingPathComponent("system.m4a").path),
                 hasTranscript: fm.fileExists(atPath: url.appendingPathComponent("transcript.json").path),
-                hasMinutes: fm.fileExists(atPath: url.appendingPathComponent("minutes.md").path)
+                hasMinutes: fm.fileExists(atPath: url.appendingPathComponent("minutes.md").path),
+                customTitle: Meeting.loadCustomTitle(in: url)
             )
         }
         .sorted { $0.date > $1.date }
+    }
+
+    /// Persist a user-chosen title to `title.txt` in the meeting folder. A
+    /// blank title (or the date default) removes the file, reverting to the
+    /// date-derived name. The folder itself is never renamed — it's the id.
+    func rename(_ meeting: Meeting, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == meeting.dateTitle {
+            try? FileManager.default.removeItem(at: meeting.titleURL)
+        } else {
+            try? trimmed.write(to: meeting.titleURL, atomically: true, encoding: .utf8)
+        }
+        refresh()
     }
 
     func delete(_ meeting: Meeting) {

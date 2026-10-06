@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Drives transcription for a recording session: makes sure the model is
@@ -15,6 +16,9 @@ final class TranscriptionService: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lines: [TranscriptLine] = []
+    /// Non-fatal problem with the last run, e.g. a track that had to be
+    /// skipped because its file was unreadable.
+    @Published private(set) var warning: String?
 
     private let modelManager = WhisperModelManager()
 
@@ -27,6 +31,7 @@ final class TranscriptionService: ObservableObject {
 
     func transcribe(folder: URL) async {
         lines = []
+        warning = nil
         do {
             let provider = TranscriptionSettings.provider
             let transcriber = try await makeTranscriber(for: provider)
@@ -53,22 +58,45 @@ final class TranscriptionService: ObservableObject {
             // participant track (system audio) the second half. The participant
             // track is diarized when the engine supports it, splitting the mixed
             // remote audio into "Speaker 1", "Speaker 2", …
+            // A track whose file can't be decoded (e.g. a recording that was
+            // cut off before the file was finalized) is skipped with a warning
+            // rather than failing the whole run on a cryptic decoder error.
+            var skipped: [String] = []
+            var transcribedAnything = false
+
             if fm.fileExists(atPath: micURL.path) {
-                let micLines = try await transcriber.transcribe(audioURL: micURL, speaker: "You", diarize: false) { fraction in
-                    Task { @MainActor in self.phase = .transcribing(fraction * 0.5) }
+                if await Self.isReadable(micURL) {
+                    let micLines = try await transcriber.transcribe(audioURL: micURL, speaker: "You", diarize: false) { fraction in
+                        Task { @MainActor in self.phase = .transcribing(fraction * 0.5) }
+                    }
+                    merged += Self.shifted(micLines, by: micShift)
+                    transcribedAnything = true
+                } else {
+                    skipped.append("your microphone track (\(micURL.lastPathComponent))")
                 }
-                merged += Self.shifted(micLines, by: micShift)
             }
             if fm.fileExists(atPath: systemURL.path) {
-                let label = provider.diarizes ? "Speaker" : "Participant"
-                let systemLines = try await transcriber.transcribe(audioURL: systemURL, speaker: label, diarize: provider.diarizes) { fraction in
-                    Task { @MainActor in self.phase = .transcribing(0.5 + fraction * 0.5) }
+                if await Self.isReadable(systemURL) {
+                    let label = provider.diarizes ? "Speaker" : "Participant"
+                    let systemLines = try await transcriber.transcribe(audioURL: systemURL, speaker: label, diarize: provider.diarizes) { fraction in
+                        Task { @MainActor in self.phase = .transcribing(0.5 + fraction * 0.5) }
+                    }
+                    merged += Self.shifted(systemLines, by: systemShift)
+                    transcribedAnything = true
+                } else {
+                    skipped.append("the participants' track (system.m4a)")
                 }
-                merged += Self.shifted(systemLines, by: systemShift)
+            }
+
+            guard transcribedAnything else { throw TranscriptionError.noReadableAudio }
+            if !skipped.isEmpty {
+                warning = "Skipped \(skipped.joined(separator: " and ")): the file is damaged and can't be decoded — usually a recording that was cut off before it finished."
             }
 
             merged.sort { $0.start < $1.start }
-            merged = Self.removingEcho(from: merged)
+            // Shared cleanup: whisper's silence loops dropped, mic bleed that survived the echo canceller removed,
+            // and the per-breath fragments joined into paragraphs instead of a column of two second lines.
+            merged = TranscriptCleanup.cleaned(merged)
             lines = merged
             try write(merged, to: folder)
 
@@ -84,16 +112,38 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
+    enum TranscriptionError: LocalizedError {
+        case noReadableAudio
+        var errorDescription: String? {
+            "None of this meeting's audio files can be decoded — the recording was cut off before the files were finalized."
+        }
+    }
+
+    /// Whether the file opens as audio with a real duration. Rejects the
+    /// unfinalized files a cut-off recording leaves behind before they're
+    /// uploaded or fed to the local model.
+    private static func isReadable(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        guard let duration = try? await asset.load(.duration) else { return false }
+        return duration.seconds > 0
+    }
+
     /// Build the transcriber for the chosen provider, downloading the whisper
     /// model first for the local engine (Deepgram needs no model).
     private func makeTranscriber(for provider: TranscriptionProvider) async throws -> Transcriber {
         switch provider {
         case .local:
-            phase = .downloadingModel(modelManager.isModelDownloaded ? 1 : 0)
-            let modelURL = try await modelManager.ensureModel { fraction in
+            phase = .downloadingModel(0)
+            // CodeSwitchTranscriber rather than LocalWhisperTranscriber: whisper picks a language once, from the
+            // first thirty seconds of whatever it is handed, and keeps it for the rest of the file. On a meeting that
+            // opened in Korean and turned to English that cost 53 of its 74 minutes, replaced by one invented phrase
+            // repeated 1,613 times. This one feeds the audio in two minute chunks so the language is detected again
+            // and again. WhisperChoice also defaults to a stronger model than ggml-small.
+            let (modelURL, note) = try await WhisperChoice.ensure { fraction in
                 Task { @MainActor in self.phase = .downloadingModel(fraction) }
             }
-            return LocalWhisperTranscriber(modelURL: modelURL)
+            if let note { warning = note }
+            return CodeSwitchTranscriber(modelURL: modelURL)
         case .deepgram:
             guard let key = KeychainStore.load(account: provider.keychainAccount), !key.isEmpty else {
                 throw LLMError.missingKey(provider: "Deepgram")
@@ -120,42 +170,6 @@ final class TranscriptionService: ObservableObject {
         }
     }
 
-    // MARK: - Echo removal
-
-    /// Drop mic ("You") segments that are really the participants' audio echoing
-    /// back through the speakers into the microphone. When a "You" line overlaps
-    /// in time with a participant line and shares most of its words, the "You"
-    /// copy is acoustic bleed, not the user — so we discard it. A text-level
-    /// backstop behind EchoCanceller's audio-level cleanup.
-    private static func removingEcho(from lines: [TranscriptLine]) -> [TranscriptLine] {
-        let participantLines = lines.filter { $0.speaker != "You" }
-        guard !participantLines.isEmpty else { return lines }
-        return lines.filter { line in
-            guard line.speaker == "You" else { return true }
-            return !participantLines.contains { other in
-                overlapsInTime(line, other) && sharesMostWords(line.text, other.text)
-            }
-        }
-    }
-
-    /// True when two segments' time spans overlap, allowing 1s of slack for the
-    /// small delay between speaker output and the mic picking it back up.
-    private static func overlapsInTime(_ a: TranscriptLine, _ b: TranscriptLine, slack: TimeInterval = 1) -> Bool {
-        a.start < b.end + slack && b.start < a.end + slack
-    }
-
-    /// True when ≥60% of the shorter segment's words appear in the longer one.
-    /// Containment (not Jaccard) on purpose: an echoed "You" line is often
-    /// padded with extra ASR filler, so the participant line is a subset of it.
-    private static func sharesMostWords(_ x: String, _ y: String, threshold: Double = 0.6) -> Bool {
-        let sx = Set(x.split(separator: " "))
-        let sy = Set(y.split(separator: " "))
-        let shorter = sx.count <= sy.count ? sx : sy
-        let longer = sx.count <= sy.count ? sy : sx
-        guard shorter.count >= 2 else { return false }
-        let overlap = shorter.intersection(longer).count
-        return Double(overlap) / Double(shorter.count) >= threshold
-    }
 
     private func write(_ lines: [TranscriptLine], to folder: URL) throws {
         try lines.plainText.write(to: folder.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)

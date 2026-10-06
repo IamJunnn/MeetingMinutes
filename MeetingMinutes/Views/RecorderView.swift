@@ -1,12 +1,10 @@
 import SwiftUI
 
-/// The "New Recording" pane: live record controls only. When a recording
-/// finishes, `onFinished` is called with its folder so the library can refresh
-/// and select it.
+/// The "New Recording" pane: live record controls only. The controller is the
+/// app-wide `RecordingController.shared`, owned by ContentView — this pane can
+/// come and go with sidebar navigation without touching a live recording.
 struct RecorderView: View {
-    var onFinished: (URL) -> Void
-
-    @StateObject private var controller = RecordingController()
+    @ObservedObject var controller: RecordingController
 
     var body: some View {
         VStack(spacing: 24) {
@@ -41,9 +39,6 @@ struct RecorderView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onChange(of: controller.lastRecordingFolder) { _, newValue in
-            if let folder = newValue { onFinished(folder) }
-        }
     }
 
     private var timeDisplay: some View {
@@ -51,7 +46,7 @@ struct RecorderView: View {
             Circle()
                 .fill(controller.isRecording ? .red : .secondary.opacity(0.4))
                 .frame(width: 12, height: 12)
-            Text(Self.format(controller.elapsed))
+            Text(RecordingController.clockString(controller.elapsed))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText())
@@ -63,9 +58,18 @@ struct RecorderView: View {
     private var statusFooter: some View {
         switch controller.state {
         case .recording:
-            Label("Recording… capturing microphone and system audio.", systemImage: "waveform")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                Label("Recording… capturing microphone and system audio.", systemImage: "waveform")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if controller.silenceSeconds >= 60 {
+                    let remaining = max(0, RecordingController.silenceTimeout - controller.silenceSeconds)
+                    Label("No audio for \(Int(controller.silenceSeconds / 60)) min — stopping automatically in \(RecordingController.clockString(remaining)).",
+                          systemImage: "moon.zzz")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+            }
         case .error(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
@@ -78,17 +82,20 @@ struct RecorderView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         default:
-            Text("Press Start to begin. You'll be asked for Microphone and Screen Recording permission the first time.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 380)
+            VStack(spacing: 6) {
+                if controller.lastStopReason == .silence {
+                    Label("The last recording stopped by itself after \(Int(RecordingController.silenceTimeout / 60)) minutes of silence.",
+                          systemImage: "moon.zzz")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Press Start to begin. You'll be asked for Microphone and Screen Recording permission the first time.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 380)
+            }
         }
-    }
-
-    private static func format(_ interval: TimeInterval) -> String {
-        let total = Int(interval)
-        return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
 }

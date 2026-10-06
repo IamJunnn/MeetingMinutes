@@ -6,10 +6,15 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var store = MeetingStore()
     @StateObject private var permissions = PermissionsManager()
+    // App-wide recorder, deliberately not owned by RecorderView: the detail
+    // pane is swapped out on every sidebar click, and a recording must outlive it.
+    @ObservedObject private var recorder = RecordingController.shared
 
     @State private var selection: Selection? = .record
     @State private var showSettings = false
     @State private var showPermissions = false
+    @State private var renameTarget: Meeting?
+    @State private var renameDraft = ""
     @AppStorage("didCompleteOnboarding") private var didCompleteOnboarding = false
 
     private enum Selection: Hashable {
@@ -45,6 +50,28 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .onChange(of: recorder.lastRecordingFolder) { _, folder in
+            // Fires wherever the user is when the recording ends — including
+            // an auto-stop while they're reading another meeting.
+            guard let folder else { return }
+            store.refresh()
+            selection = .meeting(folder.lastPathComponent)
+        }
+        .alert(
+            "Rename Meeting",
+            isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            )
+        ) {
+            TextField("Meeting name", text: $renameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                if let meeting = renameTarget { store.rename(meeting, to: renameDraft) }
+            }
+        } message: {
+            Text("Leave empty to go back to the date.")
+        }
         .sheet(isPresented: $showPermissions) {
             PermissionsView(permissions: permissions) {
                 didCompleteOnboarding = true
@@ -57,6 +84,9 @@ struct ContentView: View {
             // Only nag on a fresh install: not granted, never dismissed, and no
             // recordings yet (existing recordings prove permissions work).
             showPermissions = !permissions.allGranted && !didCompleteOnboarding && store.meetings.isEmpty
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordingsRepaired)) { _ in
+            store.refresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
@@ -88,19 +118,23 @@ struct ContentView: View {
 
             List(selection: $selection) {
                 Section {
-                    Label("New Recording", systemImage: "record.circle")
+                    recordRow
                         .tag(Selection.record)
                 }
                 Section("Meetings") {
-                    if store.filtered.isEmpty {
+                    if visibleMeetings.isEmpty {
                         Text(store.searchText.isEmpty ? "No recordings yet." : "No matches.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(store.filtered) { meeting in
+                        ForEach(visibleMeetings) { meeting in
                             MeetingRow(meeting: meeting)
                                 .tag(Selection.meeting(meeting.id))
                                 .contextMenu {
+                                    Button("Rename…") {
+                                        renameDraft = meeting.title
+                                        renameTarget = meeting
+                                    }
                                     Button("Reveal in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
                                     }
@@ -118,6 +152,33 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// The in-progress recording's folder already exists on disk but its files
+    /// aren't finalized — keep it out of the library until it's done.
+    private var visibleMeetings: [Meeting] {
+        store.filtered.filter { $0.folder != recorder.activeFolder }
+    }
+
+    /// "New Recording", turning into a live "Recording 00:12:34" indicator so a
+    /// running recording is visible from anywhere in the app.
+    @ViewBuilder
+    private var recordRow: some View {
+        if recorder.isRecording || recorder.isBusy {
+            HStack {
+                Label {
+                    Text(recorder.isBusy ? "Finishing…" : "Recording")
+                } icon: {
+                    Image(systemName: "record.circle.fill").foregroundStyle(.red)
+                }
+                Spacer()
+                Text(RecordingController.clockString(recorder.elapsed))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.red)
+            }
+        } else {
+            Label("New Recording", systemImage: "record.circle")
+        }
+    }
+
     @ViewBuilder
     private var detail: some View {
         switch selection {
@@ -129,11 +190,8 @@ struct ContentView: View {
                 ContentUnavailableView("Meeting not found", systemImage: "questionmark.folder")
             }
         default:
-            RecorderView { folder in
-                store.refresh()
-                selection = .meeting(folder.lastPathComponent)
-            }
-            .id("record")
+            RecorderView(controller: recorder)
+                .id("record")
         }
     }
 }
@@ -146,6 +204,11 @@ private struct MeetingRow: View {
             Text(meeting.title)
                 .font(.body)
                 .lineLimit(1)
+            if meeting.customTitle != nil {
+                Text(meeting.dateTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             HStack(spacing: 8) {
                 badge("text.bubble", on: meeting.hasTranscript)
                 badge("doc.text", on: meeting.hasMinutes)

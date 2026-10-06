@@ -19,6 +19,13 @@ struct MeetingDetailView: View {
     @State private var isEditingMinutes = false
     @State private var minutesDraft = ""
     @State private var copied = false
+    @State private var transcriptCopied = false
+    @State private var titleDraft = ""
+    @State private var audio: AudioState = .preparing
+    /// Bumped when launch repair rewrites recordings, so an open meeting reloads its audio.
+    @State private var repairGeneration = 0
+
+    private enum AudioState { case preparing, ready, unavailable }
 
     var body: some View {
         ScrollView {
@@ -34,14 +41,18 @@ struct MeetingDetailView: View {
             .frame(maxWidth: 700, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task(id: meeting.id) { await load() }
+        .task(id: "\(meeting.id)#\(repairGeneration)") { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .recordingsRepaired)) { _ in repairGeneration += 1 }
     }
 
     // MARK: - Header
 
     private var headerRow: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(meeting.title).font(.title2.bold())
+            TextField("Meeting name", text: $titleDraft)
+                .font(.title2.bold())
+                .textFieldStyle(.plain)
+                .onSubmit(saveTitle)
             Spacer()
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([meeting.folder])
@@ -67,9 +78,24 @@ struct MeetingDetailView: View {
             )
             .disabled(player.loadedURL == nil)
 
-            Text("\(Self.time(player.currentTime)) / \(Self.time(player.duration))")
-                .font(.caption.monospacedDigit())
+            switch audio {
+            case .preparing:
+                // Echo cleanup and mixing take about a minute for a long meeting.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing audio…")
+                }
+                .font(.caption)
                 .foregroundStyle(.secondary)
+            case .unavailable:
+                Text("Audio can't be opened")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            case .ready:
+                Text("\(Self.time(player.currentTime)) / \(Self.time(player.duration))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -80,6 +106,23 @@ struct MeetingDetailView: View {
         HStack {
             Text("Transcript").font(.headline)
             Spacer()
+            if !lines.isEmpty {
+                Button {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(namedLines.plainText, forType: .string)
+                    transcriptCopied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        transcriptCopied = false
+                    }
+                } label: {
+                    Label(transcriptCopied ? "Copied!" : "Copy",
+                          systemImage: transcriptCopied ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(transcriptCopied ? Color.green : Color.accentColor)
+                }
+                .buttonStyle(.link)
+            }
             if !transcription.isWorking {
                 Button(lines.isEmpty ? "Transcribe" : "Re-transcribe") {
                     Task {
@@ -100,6 +143,12 @@ struct MeetingDetailView: View {
         case .failed(let message):
             errorLabel(message)
         default:
+            if let warning = transcription.warning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if lines.isEmpty {
                 Text("Not transcribed yet.").font(.callout).foregroundStyle(.secondary)
             } else {
@@ -296,12 +345,32 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Persist the edited title to `title.txt`; blank (or the date default)
+    /// removes the override and falls back to the date-derived name.
+    private func saveTitle() {
+        let trimmed = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == meeting.dateTitle {
+            try? FileManager.default.removeItem(at: meeting.titleURL)
+            titleDraft = meeting.dateTitle
+        } else {
+            try? trimmed.write(to: meeting.titleURL, atomically: true, encoding: .utf8)
+            titleDraft = trimmed
+        }
+        onChanged()
+    }
+
     private func load() async {
+        titleDraft = meeting.title
         lines = meeting.loadTranscript()
         speakerNames = meeting.loadSpeakerNames()
         minutesMarkdown = meeting.loadMinutes()
-        if let url = await AudioMixer.mixedURL(for: meeting) {
-            player.load(url)
+        // A new meeting, or files rewritten by repair: start from a closed player.
+        player.stop()
+        audio = .preparing
+        if let url = await AudioMixer.mixedURL(for: meeting), player.load(url) {
+            audio = .ready
+        } else {
+            audio = .unavailable
         }
     }
 

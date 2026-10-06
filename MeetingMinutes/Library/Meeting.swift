@@ -10,14 +10,29 @@ struct Meeting: Identifiable, Hashable {
     let hasTranscript: Bool
     let hasMinutes: Bool
 
+    /// User-chosen name from `title.txt`, nil when the meeting was never renamed.
+    let customTitle: String?
+
     var micURL: URL { folder.appendingPathComponent("mic.m4a") }
     var systemURL: URL { folder.appendingPathComponent("system.m4a") }
     var transcriptJSONURL: URL { folder.appendingPathComponent("transcript.json") }
     var transcriptTextURL: URL { folder.appendingPathComponent("transcript.txt") }
     var minutesURL: URL { folder.appendingPathComponent("minutes.md") }
 
+    var titleURL: URL { folder.appendingPathComponent("title.txt") }
+
+    /// The user's custom name when set, otherwise the date-derived default.
+    var title: String { customTitle ?? dateTitle }
+
     /// Human-readable title derived from the recording's date.
-    var title: String { Self.displayFormatter.string(from: date) }
+    var dateTitle: String { Self.displayFormatter.string(from: date) }
+
+    /// Contents of `title.txt`, nil when absent or blank.
+    static func loadCustomTitle(in folder: URL) -> String? {
+        guard let raw = try? String(contentsOf: folder.appendingPathComponent("title.txt"), encoding: .utf8) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     func loadTranscript() -> [TranscriptLine] {
         guard let data = try? Data(contentsOf: transcriptJSONURL),
