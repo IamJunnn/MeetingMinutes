@@ -53,6 +53,24 @@ final class RecordingController: ObservableObject {
     /// counting it kept a forgotten recording running for hours.
     var ignoresSystemAudio = false
 
+    /// Listeners on the live tracks, for a transcript while the meeting runs:
+    /// the buffer as captured and whether it carried sound, on the capture's
+    /// own thread. Set them before `start`; they stay until the caller clears them.
+    var onMicBuffer: ((AVAudioPCMBuffer, Bool) -> Void)? {
+        get { mic.onBuffer }
+        set { mic.onBuffer = newValue }
+    }
+    var onSystemBuffer: ((AVAudioPCMBuffer, Bool) -> Void)? {
+        get { system.onBuffer }
+        set { system.onBuffer = newValue }
+    }
+    /// Seconds the system track started after the mic track, once both have
+    /// delivered a sample. Nil before that, or when a track is not running.
+    var trackOffsetSeconds: Double? {
+        guard let m = mic.firstSampleHostSeconds, let s = system.firstSampleHostSeconds else { return nil }
+        return s - m
+    }
+
     private let mic = MicCapture()
     private let system = SystemAudioCapture()
     private var startDate: Date?

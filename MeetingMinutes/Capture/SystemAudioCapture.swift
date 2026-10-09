@@ -24,6 +24,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var _firstSampleHostSeconds: Double?
     private var _lastActivityDate = Date()
 
+    /// A listener on the live call audio, for a transcript while the meeting
+    /// runs: each buffer in the stream's own format and whether it carried
+    /// sound. Called on the sample queue, so it must hand the buffer on and return.
+    var onBuffer: ((AVAudioPCMBuffer, Bool) -> Void)?
+
     /// When the system mix last carried sound above the silence threshold (or
     /// when capture started). See RecordingController's silence auto-stop.
     var lastActivityDate: Date {
@@ -133,11 +138,13 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         rawWriter?.append(sampleBuffer)
 
         guard let source = Self.pcmBuffer(from: sampleBuffer) else { return }
-        if AudioActivity.isActive(source) {
+        let active = AudioActivity.isActive(source)
+        if active {
             firstSampleLock.lock()
             _lastActivityDate = Date()
             firstSampleLock.unlock()
         }
+        onBuffer?(source, active)
     }
 
     /// Copy the sample buffer's PCM data into an AVAudioPCMBuffer in the

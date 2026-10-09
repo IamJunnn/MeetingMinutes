@@ -17,6 +17,11 @@ final class MicCapture {
     private var _firstSampleHostSeconds: Double?
     private var _lastActivityDate = Date()
 
+    /// A listener on the live mic, for a transcript while the meeting runs: each
+    /// buffer as captured and whether it carried sound. Called on the audio
+    /// thread, so it must hand the buffer on and return.
+    var onBuffer: ((AVAudioPCMBuffer, Bool) -> Void)?
+
     /// When the mic last picked up sound above the silence threshold (or when
     /// capture started). RecordingController auto-stops a forgotten recording
     /// once both tracks have been quiet for a while.
@@ -95,6 +100,7 @@ final class MicCapture {
             self.firstSampleLock.unlock()
             file.append(buffer)
             self.rawFile?.append(buffer)
+            self.onBuffer?(buffer, active)
         }
 
         engine.prepare()
