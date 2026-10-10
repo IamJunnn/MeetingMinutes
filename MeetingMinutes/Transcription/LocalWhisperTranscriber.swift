@@ -64,7 +64,7 @@ final class LocalWhisperTranscriber: Transcriber {
     /// whisper.cpp emits non-speech annotations for silence/music/noise, e.g.
     /// `[BLANK_AUDIO]`, `[Music]`, `(silence)`. These are entirely wrapped in
     /// brackets or parentheses; drop them so the transcript stays clean.
-    private static func isNonSpeech(_ text: String) -> Bool {
+    static func isNonSpeech(_ text: String) -> Bool {
         (text.hasPrefix("[") && text.hasSuffix("]") && !text.dropFirst().dropLast().contains("[")) ||
         (text.hasPrefix("(") && text.hasSuffix(")") && !text.dropFirst().dropLast().contains("("))
     }

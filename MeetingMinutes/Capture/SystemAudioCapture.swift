@@ -22,6 +22,9 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private let firstSampleLock = NSLock()   // also guards _lastActivityDate
     private var _firstSampleHostSeconds: Double?
+    /// Presentation time of the first sample written to disk. Later than the first captured one when the Prompter was
+    /// listening and the owner then asked for the rest of the call to be kept.
+    private var _firstWrittenHostSeconds: Double?
     private var _lastActivityDate = Date()
 
     /// A listener on the live call audio, for a transcript while the meeting
@@ -46,9 +49,47 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         return _firstSampleHostSeconds
     }
 
-    func start(outputURL: URL) async throws {
+    /// Time of the first sample in the file on disk, which is what the two tracks are aligned by.
+    var firstWrittenHostSeconds: Double? {
+        firstSampleLock.lock()
+        defer { firstSampleLock.unlock() }
+        return _firstWrittenHostSeconds ?? _firstSampleHostSeconds
+    }
+
+    /// `outputURL` nil: the stream runs and buffers go to `onBuffer`, and nothing is written to disk.
+    private static let settings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 128_000,
+    ]
+
+    /// Lossless sidecar for the offline echo canceller: cancelling through the AAC round trip costs about 10 dB of
+    /// depth, so EchoCanceller prefers this copy and deletes it when its analysis is done. Best effort: without it the
+    /// canceller falls back to the AAC track.
+    private static let rawSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatAppleLossless, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2, AVEncoderBitDepthHintKey: 24,
+    ]
+
+    /// Start writing partway through a run, for a Prompter that was only listening until the owner asked to keep the
+    /// call. The writers are handed over on the sample queue, the one place they are ever touched.
+    func beginWriting(to url: URL) throws {
+        guard stream != nil, writer == nil else { throw CaptureError.cannotAddInput }
+        let w = try FragmentedAudioWriter(url: url, settings: Self.settings)
+        let raw = try? FragmentedAudioWriter(url: url.deletingLastPathComponent().appendingPathComponent("system-raw.m4a"),
+                                             settings: Self.rawSettings)
+        sampleQueue.async { [weak self] in
+            guard let self else { return }
+            self.firstSampleLock.lock()
+            self._firstWrittenHostSeconds = nil
+            self.firstSampleLock.unlock()
+            self.rawWriter = raw
+            self.writer = w
+        }
+        logger.info("System audio now writing to disk")
+    }
+
+    func start(outputURL: URL?) async throws {
         // No lock needed: the stream (and thus the writing side) isn't running yet.
         _firstSampleHostSeconds = nil
+        _firstWrittenHostSeconds = nil
         _lastActivityDate = Date()
         // Requesting shareable content triggers (and requires) the Screen
         // Recording permission. ScreenCaptureKit needs a display to attach to.
@@ -67,27 +108,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         config.queueDepth = 6
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitRateKey: 128_000
-        ]
-        self.writer = try FragmentedAudioWriter(url: outputURL, settings: settings)
+        self.writer = try outputURL.map { try FragmentedAudioWriter(url: $0, settings: Self.settings) }
         sawFirstSample = false
 
-        // Lossless sidecar for the offline echo canceller: cancelling through
-        // the AAC round-trip costs ~10 dB of depth, so EchoCanceller prefers
-        // this copy and deletes it when its analysis is done. Best-effort —
-        // without it the canceller falls back to the AAC track.
-        let rawSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatAppleLossless,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitDepthHintKey: 24
-        ]
-        let rawURL = outputURL.deletingLastPathComponent().appendingPathComponent("system-raw.m4a")
-        self.rawWriter = try? FragmentedAudioWriter(url: rawURL, settings: rawSettings)
+        let rawURL = outputURL?.deletingLastPathComponent().appendingPathComponent("system-raw.m4a")
+        self.rawWriter = rawURL.flatMap { try? FragmentedAudioWriter(url: $0, settings: Self.rawSettings) }
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
@@ -124,9 +149,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         // This runs on `sampleQueue`, the same queue the writers are handed over on.
-        guard type == .audio,
-              CMSampleBufferDataIsReady(sampleBuffer),
-              let writer = self.writer else { return }
+        guard type == .audio, CMSampleBufferDataIsReady(sampleBuffer), self.stream != nil else { return }
 
         if !sawFirstSample {
             sawFirstSample = true
@@ -134,7 +157,12 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             _firstSampleHostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
             firstSampleLock.unlock()
         }
-        writer.append(sampleBuffer)
+        if writer != nil {
+            firstSampleLock.lock()
+            if _firstWrittenHostSeconds == nil { _firstWrittenHostSeconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) }
+            firstSampleLock.unlock()
+        }
+        writer?.append(sampleBuffer)
         rawWriter?.append(sampleBuffer)
 
         guard let source = Self.pcmBuffer(from: sampleBuffer) else { return }

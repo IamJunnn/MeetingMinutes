@@ -48,6 +48,12 @@ final class RecordingController: ObservableObject {
     @Published private(set) var activeFolder: URL?
     /// Seconds since either track last carried sound (0 while idle).
     @Published private(set) var silenceSeconds: TimeInterval = 0
+    /// Whether the owner's own voice is being heard. False when this Mac has no microphone attached: the session
+    /// then runs on the call's audio alone rather than having macOS call the owner's iPhone in for one.
+    @Published private(set) var hearingYou = true
+    /// Whether anything is being written to disk. False is the Prompter listening; it can be turned on partway with
+    /// keepFromNow(), and never off again within a session.
+    @Published private(set) var keeping = true
     /// When true, only the mic keeps a recording alive. For a meeting in the
     /// room, whatever the Mac plays (a video, music) is not the meeting, and
     /// counting it kept a forgotten recording running for hours.
@@ -100,12 +106,20 @@ final class RecordingController: ObservableObject {
         }
     }
 
-    func start() async {
+    /// `keeping` false: the captures run and hand their buffers on, and nothing is written to disk. The Prompter
+    /// listening without a recording; there is no folder, so there is nothing to transcribe or keep afterwards.
+    func start(keeping: Bool = true) async {
         do {
-            let granted = await AVCaptureDevice.requestAccess(for: .audio)
-            guard granted else {
-                state = .error("Microphone access denied. Enable it in System Settings → Privacy & Security → Microphone, then try again.")
-                return
+            // No microphone attached to this Mac: run on the call's audio alone. Asking for one anyway is what has
+            // macOS reach for the owner's iPhone over Continuity, which it must never do in the middle of a call.
+            let micDevice = AudioInputDevice.chosen()
+            hearingYou = micDevice != nil
+            if micDevice != nil {
+                let granted = await AVCaptureDevice.requestAccess(for: .audio)
+                guard granted else {
+                    state = .error("Microphone access denied. Enable it in System Settings → Privacy & Security → Microphone, then try again.")
+                    return
+                }
             }
 
             // ScreenCaptureKit needs Screen Recording permission for system audio. CGPreflightScreenCaptureAccess
@@ -119,7 +133,8 @@ final class RecordingController: ObservableObject {
                 return
             }
 
-            let folder = try makeSessionFolder()
+            let folder = keeping ? try makeSessionFolder() : nil
+            self.keeping = keeping
             currentFolder = folder
             activeFolder = folder
 
@@ -130,11 +145,11 @@ final class RecordingController: ObservableObject {
             let skipMic = env["MM_NO_MIC"] == "1"
             let skipSystem = env["MM_NO_SYSTEM"] == "1"
 
-            if !skipMic {
-                try mic.start(outputURL: folder.appendingPathComponent("mic.m4a"))
+            if !skipMic, micDevice != nil {
+                try mic.start(outputURL: folder?.appendingPathComponent("mic.m4a"))
             }
             if !skipSystem {
-                try await system.start(outputURL: folder.appendingPathComponent("system.m4a"))
+                try await system.start(outputURL: folder?.appendingPathComponent("system.m4a"))
             }
 
             startDate = Date()
@@ -146,6 +161,23 @@ final class RecordingController: ObservableObject {
             await mic.stop()
             await system.stop()
             cleanUpFailedSession()
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    /// Keep the call from here on: a session that was only listening starts writing both tracks to disk without
+    /// stopping, so the panel, the clock and the live transcript carry on as they were. What was said before this is
+    /// not in the files, which is the whole point of having listened instead of recorded.
+    func keepFromNow() {
+        guard state == .recording, !keeping else { return }
+        do {
+            let folder = try makeSessionFolder()
+            if hearingYou { try mic.beginWriting(to: folder.appendingPathComponent("mic.m4a")) }
+            try system.beginWriting(to: folder.appendingPathComponent("system.m4a"))
+            currentFolder = folder
+            activeFolder = folder
+            keeping = true
+        } catch {
             state = .error(error.localizedDescription)
         }
     }
@@ -190,8 +222,10 @@ final class RecordingController: ObservableObject {
             // Record when each track's first sample actually arrived — system
             // capture starts later than the mic, and EchoCanceller uses this
             // gap to align the tracks.
-            SessionTimes(micFirstSampleHostSeconds: mic.firstSampleHostSeconds,
-                         systemFirstSampleHostSeconds: system.firstSampleHostSeconds).save(in: folder)
+            // The first sample in each file, not the first one captured: when the Prompter listened before the owner
+            // asked to keep the call, the files begin later than the capture did.
+            SessionTimes(micFirstSampleHostSeconds: mic.firstWrittenHostSeconds,
+                         systemFirstSampleHostSeconds: system.firstWrittenHostSeconds).save(in: folder)
             // Warm the echo-cancelled mic now so playback and transcription
             // don't pay for the analysis on first use.
             Task.detached(priority: .utility) {
@@ -223,7 +257,9 @@ final class RecordingController: ObservableObject {
     /// so only live tracks hold the recording open.
     private func checkForSilence(at now: Date) {
         guard state == .recording else { return }
-        let lastSound = ignoresSystemAudio ? mic.lastActivityDate : max(mic.lastActivityDate, system.lastActivityDate)
+        // With no microphone the mic's clock never moves, so it cannot be the one thing holding a session open.
+        let micOnly = ignoresSystemAudio && hearingYou
+        let lastSound = micOnly ? mic.lastActivityDate : max(mic.lastActivityDate, system.lastActivityDate)
         silenceSeconds = max(0, now.timeIntervalSince(lastSound))
         if silenceSeconds >= Self.silenceTimeout {
             Task { await stop(reason: .silence) }
