@@ -21,6 +21,9 @@ final class MicCapture {
     /// recording, later than it when the Prompter was listening first and the owner then asked to keep it.
     private var _firstWrittenHostSeconds: Double?
     private var _lastActivityDate = Date()
+    private var _level: Float = 0
+    /// How loud the last buffer was, 0 to 1, for a meter. Zero before the tap runs and after it stops.
+    var level: Float { firstSampleLock.lock(); defer { firstSampleLock.unlock() }; return running ? _level : 0 }
     /// The tap's format, kept so a file can be opened for it partway through a run.
     private var format: AVAudioFormat?
 
@@ -107,6 +110,7 @@ final class MicCapture {
             guard let self, self.running else { return }
             let active = AudioActivity.isActive(buffer)
             self.firstSampleLock.lock()
+            self._level = AudioActivity.level(buffer) ?? (active ? 0.5 : 0)
             if self._firstSampleHostSeconds == nil, when.isHostTimeValid {
                 self._firstSampleHostSeconds = AVAudioTime.seconds(forHostTime: when.hostTime)
             }

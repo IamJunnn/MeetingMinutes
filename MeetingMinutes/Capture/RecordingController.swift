@@ -48,6 +48,9 @@ final class RecordingController: ObservableObject {
     @Published private(set) var activeFolder: URL?
     /// Seconds since either track last carried sound (0 while idle).
     @Published private(set) var silenceSeconds: TimeInterval = 0
+    /// How loud the call is right now, 0 to 1, the louder of the two tracks: read by a meter on its own clock, since
+    /// the audio threads write it hundreds of times a second and publishing that would cost every view a redraw.
+    var level: Float { ignoresSystemAudio && hearingYou ? mic.level : max(mic.level, system.level) }
     /// Whether the owner's own voice is being heard. False when this Mac has no microphone attached: the session
     /// then runs on the call's audio alone rather than having macOS call the owner's iPhone in for one.
     @Published private(set) var hearingYou = true

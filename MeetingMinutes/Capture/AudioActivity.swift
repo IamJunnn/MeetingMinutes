@@ -14,10 +14,23 @@ enum AudioActivity {
     /// Non-float formats are treated as active — better to never auto-stop
     /// than to cut a real meeting short on a format we don't meter.
     static func isActive(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard let channels = buffer.floatChannelData else { return true }
+        guard let db = decibels(buffer) else { return true }
+        return db > silenceThresholdDB
+    }
+
+    /// How loud the buffer is, 0 for the noise floor (-60 dBFS and under) to 1 for full scale, for a meter that
+    /// moves with the call. Nil for a format we do not meter.
+    static func level(_ buffer: AVAudioPCMBuffer) -> Float? {
+        guard let db = decibels(buffer) else { return nil }
+        return min(1, max(0, (db + 60) / 60))
+    }
+
+    /// RMS level in dBFS, or nil for a non-float format. Minus infinity for a buffer of zeros.
+    static func decibels(_ buffer: AVAudioPCMBuffer) -> Float? {
+        guard let channels = buffer.floatChannelData else { return nil }
         let frames = Int(buffer.frameLength)
         let channelCount = Int(buffer.format.channelCount)
-        guard frames > 0, channelCount > 0 else { return false }
+        guard frames > 0, channelCount > 0 else { return -.infinity }
 
         var meanSquare: Float = 0
         if buffer.format.isInterleaved {
@@ -31,7 +44,7 @@ enum AudioActivity {
                 meanSquare += rms * rms / Float(channelCount)
             }
         }
-        guard meanSquare > 0 else { return false }
-        return 10 * log10(meanSquare) > silenceThresholdDB
+        guard meanSquare > 0 else { return -.infinity }
+        return 10 * log10(meanSquare)
     }
 }

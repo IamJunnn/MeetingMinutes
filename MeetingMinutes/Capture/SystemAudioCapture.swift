@@ -26,6 +26,9 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     /// listening and the owner then asked for the rest of the call to be kept.
     private var _firstWrittenHostSeconds: Double?
     private var _lastActivityDate = Date()
+    private var _level: Float = 0
+    /// How loud the last buffer was, 0 to 1, for a meter. Zero while the stream is not running.
+    var level: Float { firstSampleLock.lock(); defer { firstSampleLock.unlock() }; return stream != nil ? _level : 0 }
 
     /// A listener on the live call audio, for a transcript while the meeting
     /// runs: each buffer in the stream's own format and whether it carried
@@ -167,6 +170,9 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
         guard let source = Self.pcmBuffer(from: sampleBuffer) else { return }
         let active = AudioActivity.isActive(source)
+        firstSampleLock.lock()
+        _level = AudioActivity.level(source) ?? (active ? 0.5 : 0)
+        firstSampleLock.unlock()
         if active {
             firstSampleLock.lock()
             _lastActivityDate = Date()
